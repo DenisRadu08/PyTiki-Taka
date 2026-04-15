@@ -1,12 +1,13 @@
 import zmq
 import json
 import math
+from config import STATE_IDLE, STATE_CHASE
 
 class PlayerAgent:
     def __init__(self, agent_id):
         self.x = agent_id * 10
         self.y = 50
-        self.state = "IDLE"
+        self.state = STATE_IDLE
         self.agent_id=agent_id
         self.context=zmq.Context()
         # Sockets
@@ -31,21 +32,37 @@ class PlayerAgent:
             # daca motorul a trimis ceva
             if self.sub_socket in events:
                 message = self.sub_socket.recv_json()
-                print(f"Agentul {self.agent_id} vede mingea la Coordonatele {message['x']}, {message['y']}")
+                # atribuim noile coordonate ale agentului
+                # verificam daca agentul exista in mesaj (pentru prima iteratie, motorul nu stie de agenti)
+                if str(self.agent_id) in message["players"]:
+                    self.x = message["players"][str(self.agent_id)]["x"]
+                    self.y = message["players"][str(self.agent_id)]["y"]
+
+                # ---------------DEBUG CONSOLA-----------------
+                # (MOMENTAN) print(f"Agentul {self.agent_id} (X: {self.x:.2f}, Y: {self.y:.2f}) vede mingea la Coordonatele {message['ball']['x']}, {message['ball']['y']}")
+                # ---------------DEBUG CONSOLA-----------------
+
                 # daca agentul e aproape de minge, trimite intentia de a o urmari
                 # mealy machine
-                distance_from_ball = self.calculate_distance(message['x'],message['y'])
-                if distance_from_ball < 20 and self.state == "IDLE":
+                distance_from_ball = self.calculate_distance(message['ball']['x'],message['ball']['y'])
+                if distance_from_ball < 20 and self.state == STATE_IDLE:
+                    # creez intentia
                     intention = {
                         "agent_id" : self.agent_id,
-                        "action" : "chase ball"
+                        "action" : STATE_CHASE
                     }
-                    self.state = "CHASE"
-                    print(f"Agentul {self.agent_id} a intrat in starea CHASE")
+                    self.state = STATE_CHASE
+                    # trimit intentia pe retea
                     self.dealer_socket.send_json(intention)
-                elif self.state == "CHASE" and distance_from_ball>30:
-                    self.state = "IDLE"
-                    print(f"Agentul {self.agent_id} a intrat in starea IDLE")
+                    print(f"Agentul {self.agent_id} a intrat in starea {STATE_CHASE}")
+                elif self.state == STATE_CHASE and distance_from_ball>30:
+                    self.state = STATE_IDLE
+                    intention = {
+                        "agent_id" : self.agent_id,
+                        "action" : STATE_IDLE
+                    }
+                    self.dealer_socket.send_json(intention)
+                    print(f"Agentul {self.agent_id} a intrat in starea {STATE_IDLE}")
             # verificam daca motorul ne-a raspuns
             if self.dealer_socket in events:
                 reply_bytes = self.dealer_socket.recv()
