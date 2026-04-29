@@ -2,7 +2,7 @@ import zmq
 import time
 import json
 import math
-from config import STATE_IDLE, STATE_CHASE
+from config import *
 
 class MatchEngine:
     def __init__(self):
@@ -18,9 +18,16 @@ class MatchEngine:
         self.poller = zmq.Poller()
         self.poller.register(self.router_socket, zmq.POLLIN)
         # Mingea
-        self.ball = {"x": 50, "y": 50}
+        self.ball = {
+            "x": 50,
+            "y": 50,
+            "velocity_x": 35.0,
+            "velocity_y": 30.0
+            }
         # Jucatori
         self.players = {}
+        # Ultimul jucator care a atins mingea (pentru OUT/CORNER)
+        self.last_touch = None
 
     
     def run(self):
@@ -35,10 +42,16 @@ class MatchEngine:
                 # adaugam jucatorul in dictionar daca nu exista
                 if str(intention["agent_id"]) not in self.players:
                     self.players[str(intention["agent_id"])] = {
-                        "x" : 10 + int(intention["agent_id"]),
-                        "y" : 40 + int(intention["agent_id"]),
+                        "start_x" : int(intention["agent_id"]) * 10,
+                        "start_y" : 50,
+                        "x" : int(intention["agent_id"]) * 10,
+                        "y" : 50,
                         "state" : STATE_IDLE
                         }
+                if str(intention["action"]) == STATE_KICK:
+                    self.ball["velocity_x"] = float(intention["kick_vx"])
+                    self.ball["velocity_y"] = float(intention["kick_vy"])
+                    self.last_touch = intention["agent_id"] 
                 # actualizam starea jucatorului
                 self.players[str(intention["agent_id"])]["state"] = intention["action"]
                 print(f"Motorul valideaza actiunea '{intention['action']}' de la Agentul {intention['agent_id']}")
@@ -46,33 +59,98 @@ class MatchEngine:
                 reply_bytes = json.dumps(reply_dict).encode('utf-8')
                 self.router_socket.send_multipart([agent_identity, reply_bytes])
 
-            # daca suntem in chase ball, mergem spre minge
             for player_id, player_data in self.players.items():
+                # daca suntem in CHASE, fugim spre minge (1.5 speed)
                 if player_data["state"] == STATE_CHASE:
-                    player_x = player_data["x"]
-                    player_y = player_data["y"]
-                    ball_x = self.ball["x"]
-                    ball_y = self.ball["y"]
-                    diff_x = ball_x - player_x
-                    diff_y = ball_y - player_y
-                    distance = math.hypot(diff_x, diff_y)
-                    if distance > 0:
-                        player_data["x"] += diff_x / distance
-                        player_data["y"] += diff_y / distance
+                    self.move_player_towards(player_data, self.ball["x"], self.ball["y"], speed = 1.5)
+                
+                # daca suntem in RESET, ne intoarcem la pozitia initiala de pe teren (1.0 speed)
+                elif player_data["state"] == STATE_RESET:
+                    self.move_player_towards(player_data, player_data["start_x"], player_data["start_y"], speed = 1.0)
+                
+                # daca suntem in DO_THROW_IN, merge usor spre a bate out-ul (0.5 speed)
+                elif player_data["state"] == STATE_DO_THROW_IN:
+                    self.move_player_towards(player_data, self.ball["x"], self.ball["y"], speed = 0.5)
+
+            
 
             # miscarea mingii
-            if self.ball['x']<100 :
-                self.ball['x'] += 1
-            else:
-                self.ball['x'] = 0
+            # 1. aplicam viteza
+            self.ball['x'] += self.ball['velocity_x']
+            self.ball['y'] += self.ball['velocity_y']
+            # 2. aplicam frecarea
+            self.ball['velocity_x'] *= 0.95
+            self.ball['velocity_y'] *= 0.95
+
             # broadcast al jocului
             game_state = {
                 "ball" : self.ball,
-                "players" : self.players
+                "players" : self.players,
+                "game_status" : STATUS_PLAYING,
+                "last_touch" : self.last_touch 
             }
+
+            # OUT + GOAL?
+            if self.ball['x'] <= 0:
+                if self.ball['y'] >= 40 and self.ball['y'] <=60:
+                    print("GOAL!!! GOAL!!! GOAL!!!")
+                    game_state['game_status'] = STATUS_GOAL
+                    self.ball['x'] = 50
+                    self.ball['y'] = 50
+                    self.ball['velocity_x'] = 0
+                    self.ball['velocity_y'] = 0
+                else:
+                    self.ball['velocity_x'] *= -1
+                    
+                    self.ball['x'] = 0
+            if self.ball['x'] >= 100:
+                if self.ball['y'] >= 40 and self.ball['y'] <=60:
+                    print("GOAL!!! GOAL!!! GOAL!!!")
+                    game_state['game_status'] = STATUS_GOAL
+                    self.ball['x'] = 50
+                    self.ball['y'] = 50
+
+                    self.ball['velocity_x'] = 0
+                    self.ball['velocity_y'] = 0
+                else:
+                    self.ball['velocity_x'] *= -1
+                    self.ball['x'] = 100
+            if self.ball['y'] <= 0:
+                print("Out de margine!")
+                game_state['game_status'] = STATUS_OUT
+                self.ball['y'] = 0
+                self.ball['velocity_x'] = 0
+                self.ball['velocity_y'] = 0
+            if self.ball['y'] >= 100:
+                print("Out de margine")
+                game_state['game_status'] = STATUS_OUT
+                self.ball['y'] = 100
+                self.ball['velocity_x'] = 0
+                self.ball['velocity_y'] = 0
+
+
+            
+            
+
             self.pub_socket.send_json(game_state)
             # delay pentru a limita FPS-ul
             time.sleep(0.05)
 
+    def move_player_towards(self, player_data, target_x, target_y, speed):
+        player_x = player_data["x"]
+        player_y = player_data["y"]
 
+        diff_x = target_x - player_x
+        diff_y = target_y - player_y
+        distance = math.hypot(diff_x, diff_y)
+
+        # daca distanta e mai mare decat viteza, face pasul cu viteza respectiva
+        if distance > speed:
+            player_data["x"] += (diff_x / distance) * speed
+            player_data["y"] += (diff_y / distance) * speed
+        else:
+            # clamping
+            player_data["x"] = target_x
+            player_data["y"] = target_y
+             
     
