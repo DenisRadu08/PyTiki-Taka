@@ -21,8 +21,8 @@ class MatchEngine:
         self.ball = {
             "x": 50,
             "y": 50,
-            "velocity_x": 35.0,
-            "velocity_y": 30.0
+            "velocity_x": 0.0,
+            "velocity_y": 0.0
             }
         # Jucatori
         self.players = {}
@@ -39,16 +39,19 @@ class MatchEngine:
                 message = self.router_socket.recv_multipart()
                 agent_identity, agent_message = message
                 intention = json.loads(agent_message.decode('utf-8'))
+
+                # extragem ID-ul ca string curat
+                agent_id_str = str(intention["agent_id"])
                 # adaugam jucatorul in dictionar daca nu exista
-                if str(intention["agent_id"]) not in self.players:
-                    self.players[str(intention["agent_id"])] = {
-                        "start_x" : int(intention["agent_id"]) * 10,
-                        "start_y" : 50,
-                        "x" : int(intention["agent_id"]) * 10,
-                        "y" : 50,
+                if agent_id_str not in self.players:
+                    self.players[agent_id_str] = {
+                        "start_x" : STARTING_POSITIONS[agent_id_str]["x"],
+                        "start_y" : STARTING_POSITIONS[agent_id_str]["y"],
+                        "x" : STARTING_POSITIONS[agent_id_str]["x"],
+                        "y" : STARTING_POSITIONS[agent_id_str]["y"],
                         "state" : STATE_IDLE
-                        }
-                if str(intention["action"]) == STATE_KICK:
+                    }
+                if str(intention["action"]) in [STATE_KICK, STATE_DRIBBLE]: 
                     self.ball["velocity_x"] = float(intention["kick_vx"])
                     self.ball["velocity_y"] = float(intention["kick_vy"])
                     self.last_touch = intention["agent_id"] 
@@ -59,6 +62,7 @@ class MatchEngine:
                 reply_bytes = json.dumps(reply_dict).encode('utf-8')
                 self.router_socket.send_multipart([agent_identity, reply_bytes])
 
+            # miscarea agentilor
             for player_id, player_data in self.players.items():
                 # daca suntem in CHASE, fugim spre minge (1.5 speed)
                 if player_data["state"] == STATE_CHASE:
@@ -116,13 +120,17 @@ class MatchEngine:
                     self.ball['velocity_x'] *= -1
                     self.ball['x'] = 100
             if self.ball['y'] <= 0:
-                print("Out de margine!")
+                # pentru a avea o singura data print-ul
+                if self.ball['velocity_y'] != 0:   
+                    print("Out de margine!")     
                 game_state['game_status'] = STATUS_OUT
                 self.ball['y'] = 0
                 self.ball['velocity_x'] = 0
                 self.ball['velocity_y'] = 0
             if self.ball['y'] >= 100:
-                print("Out de margine")
+                # pentru a avea o singura data print-ul
+                if self.ball['velocity_y'] != 0:    
+                    print("Out de margine!")       
                 game_state['game_status'] = STATUS_OUT
                 self.ball['y'] = 100
                 self.ball['velocity_x'] = 0
