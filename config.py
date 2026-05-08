@@ -8,6 +8,9 @@ STATE_RESET = "RESET"
 STATE_DO_THROW_IN = "DO_THROW_IN"
 STATE_WAIT_THROW_IN = "WAIT_THROW_IN"
 STATE_DRIBBLE = "DRIBBLE"
+STATE_GK_DEFEND_GOAL = "GK_DEFEND_GOAL"
+STATE_GK_CLEAR_BALL = "GK_CLEAR_BALL"
+STATE_GK_HOLD_BALL = "GK_HOLD_BALL"
 
 
 # STATUSES
@@ -18,9 +21,11 @@ STATUS_START_GAME = "START_GAME"
 
 # STARTING POSITIONS
 STARTING_POSITIONS = {
-    "1" : {"x": 30, "y": 31},
-    "2" : {"x": 60, "y": 50}
+    "1" : {"x": 0, "y": 50, "team": "A", "role": "GK"},
+    "2" : {"x": 35, "y": 50, "team": "A", "role": "FIELD"},
+    "101" : {"x": 60, "y": 50, "team":"B", "role": "FIELD"},
+    "102" : {"x": 70, "y": 45, "team":"B", "role": "FIELD"},
 }
 
 # PLAYERS
-NUM_OF_PLAYERS = 2
+NUM_OF_PLAYERS = 4

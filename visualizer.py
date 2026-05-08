@@ -48,17 +48,22 @@ class GameVisualizer:
 
             # 7. Parcurgem jucatorii
             for player_id, player_data in message["players"].items():
-                player_data["x"] *= 8
-                player_data["y"] *= 6
+                
+                draw_x = int(player_data["x"] * 8)
+                draw_y = int(player_data["y"] * 6)
             
                 # 8. Culoarea jucatorilor
-                if player_id == "1":
+                team = player_data.get("team", "Unknown")
+
+                if team == "A":
                     player_color = self.RED
-                else:
+                elif team == "B":
                     player_color = self.BLUE
-            
+                else:
+                    player_color = (128, 128, 128) # gri de siguranta, in caz ca cineva nu are echipa
+
                 # 9. Desenam jucatorii
-                pygame.draw.circle(self.screen, player_color, (int(player_data["x"]), int(player_data["y"])), 10)
+                pygame.draw.circle(self.screen, player_color, (draw_x, draw_y), 10)
             
             # 10. Actualizam ecranul
             pygame.display.flip()

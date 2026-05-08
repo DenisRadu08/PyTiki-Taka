@@ -1,17 +1,20 @@
-from config import STATE_IDLE
 import zmq
 import json
 import math
+import random
 from config import *
 
 class PlayerAgent:
-    def __init__(self, agent_id):
+    def __init__(self, agent_id, team_id):
         self.x = 0.0
         self.y = 0.0
         self.start_x = self.x
         self.start_y = self.y
         self.state = STATE_IDLE
         self.agent_id=agent_id
+        self.team_id = team_id
+        self.last_logged_state = None
+        self.stun_frames = 0
         self.context=zmq.Context()
         # Sockets
         self.sub_socket = self.context.socket(zmq.SUB)
@@ -32,6 +35,7 @@ class PlayerAgent:
         # Inregistrare agenti
         intention = {
             "agent_id" : self.agent_id,
+            "team_id" : self.team_id,
             "action" : STATE_IDLE
         }
         self.dealer_socket.send_json(intention)
@@ -50,6 +54,10 @@ class PlayerAgent:
                     self.start_x = message["players"][str(self.agent_id)]["start_x"]
                     self.start_y = message["players"][str(self.agent_id)]["start_y"]
                 
+                    # Acceptam deciziile de stare ale Arbitrului (ex: STUN / Pedeapsa)
+                    self.state = message["players"][str(self.agent_id)]["state"]
+                    self.stun_frames = message["players"][str(self.agent_id)]["stun_frames"] # NOU
+
                 # ---------------DEBUG CONSOLA-----------------
                 # (MOMENTAN) print(f"Agentul {self.agent_id} (X: {self.x:.2f}, Y: {self.y:.2f}) vede mingea la Coordonatele {message['ball']['x']}, {message['ball']['y']}")
                 # ---------------DEBUG CONSOLA-----------------
@@ -80,7 +88,6 @@ class PlayerAgent:
                             "action" : self.state
                         }
                         self.dealer_socket.send_json(intention)
-                        print (f"Out de margine! Agentul {self.agent_id} intra in starea {self.state}")
                     
                     # 2. Executia (se verifica fiecare cadru cat timp e aut)
                     # E IN DO_THROW_IN SI AJUNGE LA MINGE
@@ -88,7 +95,6 @@ class PlayerAgent:
                         intention = self.prepare_kick(50.0, 50.0, power = 5.0)
                         self.dealer_socket.send_json(intention)
                         self.state = STATE_IDLE # am aruncat mingea!
-                        print(f"Agentul {self.agent_id} a repus mingea in joc!")
                 
                 # ===================================
                 # JOCUL ESTE IN DESFASURARE (PLAYING)
@@ -97,24 +103,37 @@ class PlayerAgent:
 
                     # daca agentul e aproape de minge, trimite intentia de a o urmari
                     # mealy machine
-                    distance_from_ball = self.calculate_distance(message['ball']['x'],message['ball']['y'])
+                    distance_agent_to_ball = self.calculate_distance(message['ball']['x'],message['ball']['y'])
                     # unde dam mingea
-                    if str(self.agent_id) == "1":
-                        target_x = 70.0 # agentul 1 ataca dreapta
+                    if float(self.start_x) < 50.0:
+                        target_x = 100.0 # agentii din stanga ataca dreapta
                     else:
-                        target_x = 0.0 # agentul 2 ataca stanga
-                    target_y = 80.0 # centrul portii pe verticala
-                    distance_from_goal = self.calculate_distance(target_x, target_y)
+                        target_x = 0.0 # agentii din dreapta ataca stanga
+                    target_y = random.uniform(41.0,59.0) # pe poarta
+                    distance_agent_to_opponent_goal = self.calculate_distance(target_x, target_y)
+                    
+                    # GUARD CLAUSE pentru stun
+                    if self.stun_frames > 0:
+                        pass
+
                     # E IN (DO/WAIT)_THROW_IN SI AUT-UL A FOST EXECUTAT => TRECE IN IDLE 
-                    if self.state in [STATE_DO_THROW_IN, STATE_WAIT_THROW_IN]:
+                    elif self.state in [STATE_DO_THROW_IN, STATE_WAIT_THROW_IN]:
                         self.state = STATE_IDLE
                         intention = {
                             "agent_id" : self.agent_id,
                             "action" : self.state
                         }
                         self.dealer_socket.send_json(intention)
-                        print(f"S-a executat aut-ul si agentul {self.agent_id} a intrat in starea {self.state}")
 
+                    # TRANZITIA DUPA RESET
+                    elif self.state == STATE_RESET:
+                        self.state = STATE_IDLE
+                        intention = {
+                            "agent_id" : self.agent_id,
+                            "action" : self.state
+                        }
+                        self.dealer_socket.send_json(intention)
+                    
                     # TRANZITIA DUPA SUT
                     # E IN KICK, DUPA CE A SUTAT TRECE IN IDLE
                     elif self.state == STATE_KICK:
@@ -124,7 +143,6 @@ class PlayerAgent:
                             "action" : self.state
                         }
                         self.dealer_socket.send_json(intention)
-                        print(f"Agentul {self.agent_id} a sutat si apoi a intrat in starea {self.state}")
                     
                     # TRANZITIA DUPA DRIBBLING
                     # E IN DRIBBLING, DUPA CE IMPINGE MINGEA MAI IN FATA, FUGE DUPA EA
@@ -135,22 +153,20 @@ class PlayerAgent:
                             "action" : self.state
                         }
                         self.dealer_socket.send_json(intention)
-                        print(f"Agentul {self.agent_id} a driblat si a intrat in starea {self.state}")
 
                     # RENUNTAREA LA URMARIRE
                     # E IN CHASE SI RAMANE PREA DEPARTE => TRECE IN IDLE
-                    elif self.state == STATE_CHASE and distance_from_ball>30:
+                    elif self.state == STATE_CHASE and distance_agent_to_ball>30:
                         self.state = STATE_IDLE
                         intention = {
                             "agent_id" : self.agent_id,
                             "action" : STATE_IDLE
                         }
                         self.dealer_socket.send_json(intention)
-                        print(f"Agentul {self.agent_id} a intrat in starea {STATE_IDLE}")
 
                     # DECLANSAREA URMARIRII
                     # E IN IDLE SI E APROAPE DE MINGE=> TRECE IN CHASE
-                    elif self.state == STATE_IDLE and distance_from_ball < 20:
+                    elif self.state == STATE_IDLE and distance_agent_to_ball < 20:
                         self.state = STATE_CHASE
                         # creez intentia
                         intention = {
@@ -159,32 +175,31 @@ class PlayerAgent:
                         }
                         # trimit intentia pe retea
                         self.dealer_socket.send_json(intention)
-                        print(f"Agentul {self.agent_id} a intrat in starea {STATE_CHASE}")
 
                     # EXECUTIA SUTULUI
-                    # E IN CHASE SI FOARTE APROAPE DE MINGE SI APROAPE DE POARTA => TRECE IN KICK (cu power mare)
-                    elif self.state == STATE_CHASE and distance_from_ball < 2 and distance_from_goal <= 20.0:
+                    # E IN CHASE SI FOARTE APROAPE DE MINGE SI APROAPE DE POARTA SI ARE POSESIA => TRECE IN KICK (cu power mare)
+                    elif self.state == STATE_CHASE and distance_agent_to_ball < 2 and distance_agent_to_opponent_goal <= 20.0 and message["possession"] in [None, str(self.agent_id)]:
                         self.state = STATE_KICK
-                        intention = self.prepare_kick(target_x, target_y, power = 8.0)
+                        intention = self.prepare_kick(target_x, target_y, power = 1.5)
                         self.dealer_socket.send_json(intention)
-                        print(f"Agentul {self.agent_id} a intrat in starea {STATE_KICK}")
                     
                     # DRIBBLING
-                    # E IN CHASE SI FOARTE APROAPE DE MINGE, DAR DEPARTE DE POARTA => TRECE IN KICK (cu power mic)
-                    elif self.state == STATE_CHASE and distance_from_ball < 2 and distance_from_goal > 20.0:
+                    # E IN CHASE SI FOARTE APROAPE DE MINGE, DAR DEPARTE DE POARTA SI ARE POSESIA MINGII => TRECE IN DRIBBLE (cu power mic)
+                    elif self.state == STATE_CHASE and distance_agent_to_ball < 2 and distance_agent_to_opponent_goal > 20.0 and message["possession"] in [None, str(self.agent_id)]:
                         self.state = STATE_DRIBBLE
                         intention = self.prepare_kick(target_x, target_y, power = 1.0, action_type = STATE_DRIBBLE)
                         self.dealer_socket.send_json(intention)
-                        print(f"Agentul {self.agent_id} a intrat in starea {STATE_DRIBBLE}")
 
-
+            # printam state-ul agentului (DEBUGGING)
+            self.print_state(self.state)
 
             # verificam daca motorul ne-a raspuns
             if self.dealer_socket in events:
                 reply_bytes = self.dealer_socket.recv()
                 reply = json.loads(reply_bytes.decode('utf-8'))
-                print(f"Agentul {self.agent_id} a primit raspunsul: {reply['status']}")
-        
+
+
+
     # calculam distanta dintre agent si o tinta oarecare
     def calculate_distance(self, target_x, target_y):
         distance = math.sqrt((self.x-target_x)**2 + (self.y - target_y)**2)
@@ -218,7 +233,6 @@ class PlayerAgent:
         if self.calculate_distance(target_x, target_y) < 2.0:
             if self.state != STATE_IDLE:
                 self.state = STATE_IDLE
-                print (f"Agentul {self.agent_id} a ajuns pe pozitia {position}.")
                 intention = {
                     "agent_id" : self.agent_id,
                     "action" : self.state
@@ -227,7 +241,6 @@ class PlayerAgent:
         else: 
             if self.state != STATE_RESET:
                 self.state = STATE_RESET
-                print(f"Agentul {self.agent_id} se indreapta spre pozitia {position}")
                 intention = {
                     "agent_id" : self.agent_id,
                     "action" : self.state
@@ -237,6 +250,8 @@ class PlayerAgent:
         # nu s-a schimbat nimic
         return None
             
-
-        
+    def print_state(self, curr_state):
+        if curr_state != self.last_logged_state:
+            print(f"Agent {self.agent_id} -> {curr_state}")
+            self.last_logged_state = curr_state
         
