@@ -67,10 +67,10 @@ class MatchEngine:
                             "y" : tunnel_y, 
                             "state" : STATE_IDLE,
                             "stun_frames" : 0,
-                            "team" : intention.get("team_id", "Unknown") 
+                            "team" : intention.get("team", "Unknown") 
                         }
 
-                    if str(intention["action"]) in [STATE_KICK, STATE_DRIBBLE, STATE_GK_CLEAR_BALL]: 
+                    if str(intention["action"]) in [STATE_KICK, STATE_DRIBBLE, STATE_PASS, STATE_GK_CLEAR_BALL]: 
                         if self.game_status in [STATUS_PLAYING, STATUS_OUT]: 
 
                             # extragem pozitia reala a jucatorului din mintea Serverului
@@ -114,7 +114,7 @@ class MatchEngine:
                     continue
 
                 # daca suntem in CHASE, fugim spre minge (1.5 speed)
-                if player_data["state"] in [STATE_CHASE, STATE_DRIBBLE]:
+                if player_data["state"] in [STATE_CHASE, STATE_DRIBBLE, STATE_DRIBBLE_DUEL]:
                     self.move_player_towards(player_data, self.ball["x"], self.ball["y"], speed = 1.5)
                 
                 # daca suntem in RESET, ne intoarcem la pozitia initiala de pe teren (1.0 speed)
@@ -270,6 +270,13 @@ class MatchEngine:
             # 2. aplicam frecarea
             self.ball['velocity_x'] *= 0.95
             self.ball['velocity_y'] *= 0.95
+
+            # verificam daca mingea e libera sau in posesia cuiva
+            if self.possession is not None:
+                possessor_data = self.players[self.possession]
+                distance_possessor_to_ball = self.calculate_distance(possessor_data["x"], possessor_data["y"], self.ball["x"], self.ball["y"])
+                if distance_possessor_to_ball > 3.0:
+                    self.possession = None
 
             # ==================================================
             # ------ SISTEMUL ANTI-COLLIDE JUCATOR-MINGE -------

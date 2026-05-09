@@ -14,9 +14,9 @@ def start_agent(agent_id_str):
     team = STARTING_POSITIONS[agent_id_str]["team"]
 
     if role == "GK":
-        agent = GoalkeeperAgent(agent_id = agent_id_str, team_id = team)
+        agent = GoalkeeperAgent(agent_id = agent_id_str, team = team)
     else:
-        agent = PlayerAgent(agent_id = agent_id_str, team_id = team)
+        agent = PlayerAgent(agent_id = agent_id_str, team = team)
 
     agent.run()
 

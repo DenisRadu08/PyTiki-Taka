@@ -5,16 +5,17 @@ import random
 from config import *
 
 class PlayerAgent:
-    def __init__(self, agent_id, team_id):
+    def __init__(self, agent_id, team):
         self.x = 0.0
         self.y = 0.0
         self.start_x = self.x
         self.start_y = self.y
         self.state = STATE_IDLE
         self.agent_id=agent_id
-        self.team_id = team_id
+        self.team = team
         self.last_logged_state = None
         self.stun_frames = 0
+        self.duel_frames = 0
         self.context=zmq.Context()
         # Sockets
         self.sub_socket = self.context.socket(zmq.SUB)
@@ -35,7 +36,7 @@ class PlayerAgent:
         # Inregistrare agenti
         intention = {
             "agent_id" : self.agent_id,
-            "team_id" : self.team_id,
+            "team" : self.team,
             "action" : STATE_IDLE
         }
         self.dealer_socket.send_json(intention)
@@ -56,12 +57,34 @@ class PlayerAgent:
                 
                     # Acceptam deciziile de stare ale Arbitrului (ex: STUN / Pedeapsa)
                     self.state = message["players"][str(self.agent_id)]["state"]
-                    self.stun_frames = message["players"][str(self.agent_id)]["stun_frames"] # NOU
+                    self.stun_frames = message["players"][str(self.agent_id)]["stun_frames"]
+                
 
                 # ---------------DEBUG CONSOLA-----------------
                 # (MOMENTAN) print(f"Agentul {self.agent_id} (X: {self.x:.2f}, Y: {self.y:.2f}) vede mingea la Coordonatele {message['ball']['x']}, {message['ball']['y']}")
                 # ---------------DEBUG CONSOLA-----------------
+                
 
+                # Verificam pozitia adversarilor fata de jucator
+                closest_teammate_distance = 100
+                closest_opponent_distance = 100
+            
+                for player_id, player_data in message["players"].items():
+                    # verificam sa nu fie el insusi
+                    if str(player_id) == str(self.agent_id):
+                        continue
+                    # daca e coechipier
+                    if player_data["team"] == self.team:
+                        distance_agent_to_teammate = self.calculate_distance(player_data["x"], player_data["y"])
+                        if distance_agent_to_teammate < closest_teammate_distance:
+                            closest_teammate_distance = distance_agent_to_teammate
+                            closest_teammate_id = player_id
+                    # daca e adversar 
+                    else:
+                        distance_agent_to_opponent = self.calculate_distance(player_data["x"], player_data["y"])
+                        if distance_agent_to_opponent < closest_opponent_distance:
+                            closest_opponent_distance = distance_agent_to_opponent
+                            closest_opponent_id = player_id
 
                 # ========================================================
                 # INCEPE MECIUL (START_GAME) SAU S-A INSCRIS UN GOL (GOAL)
@@ -143,6 +166,31 @@ class PlayerAgent:
                             "action" : self.state
                         }
                         self.dealer_socket.send_json(intention)
+
+                    # TRANZITIA DUPA PASA
+                    # DUPA CE A PASAT, TRECE IN IDLE
+                    elif self.state == STATE_PASS:
+                        self.state = STATE_IDLE
+                        intention = {
+                            "agent_id" : self.agent_id,
+                            "action" : self.state
+                        }
+                        self.dealer_socket.send_json(intention)
+
+                    # TRANZITIA DUPA DRIBBLE DUEL
+                    # in functie de duel_frames
+                    elif self.state == STATE_DRIBBLE_DUEL:
+                        if self.duel_frames == 0:
+                            self.state = STATE_IDLE
+                        else:
+                            self.duel_frames -= 1
+                        
+                        intention = {
+                            "agent_id" : self.agent_id,
+                            "action" : self.state
+                        }
+                        self.dealer_socket.send_json(intention)
+
                     
                     # TRANZITIA DUPA DRIBBLING
                     # E IN DRIBBLING, DUPA CE IMPINGE MINGEA MAI IN FATA, FUGE DUPA EA
@@ -156,7 +204,7 @@ class PlayerAgent:
 
                     # RENUNTAREA LA URMARIRE
                     # E IN CHASE SI RAMANE PREA DEPARTE => TRECE IN IDLE
-                    elif self.state == STATE_CHASE and distance_agent_to_ball>30:
+                    elif self.state == STATE_CHASE and distance_agent_to_ball > 30:
                         self.state = STATE_IDLE
                         intention = {
                             "agent_id" : self.agent_id,
@@ -176,19 +224,37 @@ class PlayerAgent:
                         # trimit intentia pe retea
                         self.dealer_socket.send_json(intention)
 
-                    # EXECUTIA SUTULUI
-                    # E IN CHASE SI FOARTE APROAPE DE MINGE SI APROAPE DE POARTA SI ARE POSESIA => TRECE IN KICK (cu power mare)
-                    elif self.state == STATE_CHASE and distance_agent_to_ball < 2 and distance_agent_to_opponent_goal <= 20.0 and message["possession"] in [None, str(self.agent_id)]:
-                        self.state = STATE_KICK
-                        intention = self.prepare_kick(target_x, target_y, power = 1.5)
+                    # E IN CHASE SI A AJUNS LA MINGE
+                    elif self.state == STATE_CHASE and distance_agent_to_ball < 2.0 and message["possession"] in [None, str(self.agent_id)]:
+                        
+                        # daca suntem aproape de poarta, sutam
+                        if distance_agent_to_opponent_goal <= 20.0:
+                            self.state = STATE_KICK
+                            intention = self.prepare_kick(target_x, target_y, power = 1.5, action_type = STATE_KICK)
+                        
+                        # daca suntem departe de poarta, vedem daca ne preseaza vreun adversar
+                        elif closest_opponent_distance < 5.0:
+                            # pasam catre cel mai apropiat coechipier -> 75%
+                            if random.randint(1,100) <= 75:
+                                self.state = STATE_PASS
+                                pass_power = min(max(closest_teammate_distance * 0.10, 1.5), 6.0) # viteza pasei
+                                pass_target_x = message["players"][str(closest_teammate_id)]["x"] + random.uniform(-3.0, 3.0)
+                                pass_target_y = message["players"][str(closest_teammate_id)]["y"] + random.uniform(-3.0, 3.0)
+                                intention = self.prepare_kick(pass_target_x, pass_target_y, power = pass_power, action_type = STATE_PASS)
+                            # incercam sa driblam adversarul -> 25%
+                            else:
+                                self.state = STATE_DRIBBLE_DUEL
+                                self.duel_frames = 60
+                                intention = self.prepare_kick(target_x, target_y, power = 1.5, action_type = STATE_DRIBBLE)
+                        
+                        # daca suntem departe de poarta si nu e niciun adversar aproape, urcam cu mingea
+                        else:
+                            self.state = STATE_DRIBBLE
+                            intention = self.prepare_kick(target_x, target_y, power = 1.0, action_type = STATE_DRIBBLE)
+                        
                         self.dealer_socket.send_json(intention)
-                    
-                    # DRIBBLING
-                    # E IN CHASE SI FOARTE APROAPE DE MINGE, DAR DEPARTE DE POARTA SI ARE POSESIA MINGII => TRECE IN DRIBBLE (cu power mic)
-                    elif self.state == STATE_CHASE and distance_agent_to_ball < 2 and distance_agent_to_opponent_goal > 20.0 and message["possession"] in [None, str(self.agent_id)]:
-                        self.state = STATE_DRIBBLE
-                        intention = self.prepare_kick(target_x, target_y, power = 1.0, action_type = STATE_DRIBBLE)
-                        self.dealer_socket.send_json(intention)
+
+
 
             # printam state-ul agentului (DEBUGGING)
             self.print_state(self.state)
@@ -197,6 +263,7 @@ class PlayerAgent:
             if self.dealer_socket in events:
                 reply_bytes = self.dealer_socket.recv()
                 reply = json.loads(reply_bytes.decode('utf-8'))
+        
 
 
 

@@ -7,8 +7,8 @@ import time
 import random
 
 class GoalkeeperAgent(PlayerAgent):
-    def __init__(self, agent_id, team_id):
-        super().__init__(agent_id, team_id)
+    def __init__(self, agent_id, team):
+        super().__init__(agent_id, team)
         self.last_target_y = 0.0
         self.catch_time = 0.0
 
@@ -17,7 +17,7 @@ class GoalkeeperAgent(PlayerAgent):
         # Inregistrare agenti
         intention = {
             "agent_id" : self.agent_id,
-            "team_id" : self.team_id,
+            "team" : self.team,
             "action" : STATE_IDLE
         }
         self.dealer_socket.send_json(intention)
