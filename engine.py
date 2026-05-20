@@ -70,7 +70,7 @@ class MatchEngine:
                             "team" : intention.get("team", "Unknown") 
                         }
 
-                    if str(intention["action"]) in [STATE_KICK, STATE_DRIBBLE, STATE_PASS, STATE_GK_CLEAR_BALL]: 
+                    if str(intention["action"]) in [STATE_KICK, STATE_DRIBBLE, STATE_PASS, STATE_CONTROL_BALL, STATE_GK_CLEAR_BALL]: 
                         if self.game_status in [STATUS_PLAYING, STATUS_OUT]: 
 
                             # extragem pozitia reala a jucatorului din mintea Serverului
@@ -130,6 +130,17 @@ class MatchEngine:
                     if "target_x" in player_data and "target_y" in player_data:
                         self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 1.0)
 
+                # daca suntem in ATTACK_SUPORT, agentul ataca poarta adversa
+                elif player_data["state"] == STATE_ATTACK_SUPPORT:
+                    if "target_x" in player_data and "target_y" in player_data:
+                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 0.5)
+                
+                # daca suntem in DEFEND_SUPPORT, agentul se pozitioneaza in aparare
+                elif player_data["state"] == STATE_DEFEND_SUPPORT:
+                    if "target_x" in player_data and "target_y" in player_data:
+                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 0.8)
+                    
+
             if self.game_status in [STATUS_START_GAME, STATUS_GOAL]:
                 if self.are_players_ready():
                     self.game_status = STATUS_PLAYING
@@ -180,6 +191,11 @@ class MatchEngine:
 
                         p2["x"] -= dx * push_back
                         p2["y"] -= dy * push_back
+
+                        # Guard Clause pentru ca coechipierii sa nu 
+                        # incerce sa faca tackle intre ei
+                        if p1["team"] == p2["team"]:
+                            continue
 
                         # MECANICA DE TACKLE
                         if self.possession in [p1_id, p2_id]:
@@ -234,6 +250,12 @@ class MatchEngine:
                                             attacker["stun_frames"] = random.randint(5,55)
                                             attacker["state"] = STATE_IDLE
                                             self.possession = defender_id
+
+                                            # rezolvarea suprapunerii -> knockback
+                                            # impingem atacantul in spate ca efect al deposedarii
+                                            attacker["x"] -= nx_def * 2.0
+                                            attacker["y"] -= ny_def * 2.0
+
                                                 # respingem mingea din piciorul atacantului
                                             self.ball["velocity_x"] = nx_def * 1.0
                                             self.ball["velocity_y"] = ny_def * 1.0
@@ -284,6 +306,11 @@ class MatchEngine:
 
             for player_id, player_data in self.players.items():
                 
+                # daca jucatorul a cazut la pamant, mingea trece peste el
+                # pentru a nu bloca driblingurile lansate pe langa el
+                if player_data["stun_frames"] > 0:
+                    continue
+
                 distance_to_ball = self.calculate_distance(player_data["x"], player_data["y"], self.ball["x"], self.ball["y"])
 
                 # pragul de coliziune

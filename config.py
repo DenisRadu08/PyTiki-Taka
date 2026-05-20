@@ -10,6 +10,9 @@ STATE_WAIT_THROW_IN = "WAIT_THROW_IN"
 STATE_DRIBBLE = "DRIBBLE"
 STATE_DRIBBLE_DUEL = "DRIBBLE_DUEL"
 STATE_PASS = "PASS"
+STATE_ATTACK_SUPPORT = "ATTACK_SUPPORT"
+STATE_DEFEND_SUPPORT = "DEFEND_SUPPORT"
+STATE_CONTROL_BALL = "CONTROL_BALL"
 STATE_GK_DEFEND_GOAL = "GK_DEFEND_GOAL"
 STATE_GK_CLEAR_BALL = "GK_CLEAR_BALL"
 STATE_GK_HOLD_BALL = "GK_HOLD_BALL"
@@ -23,10 +26,10 @@ STATUS_START_GAME = "START_GAME"
 
 # STARTING POSITIONS
 STARTING_POSITIONS = {
-    "1" : {"x": 0, "y": 50, "team": "A", "role": "GK"},
-    "2" : {"x": 15, "y": 50, "team": "A", "role": "FIELD"},
-    "101" : {"x": 70, "y": 80, "team":"B", "role": "FIELD"},
-    "102" : {"x": 55, "y": 45, "team":"B", "role": "FIELD"},
+    "1" : {"x": 0, "y": 50, "team": "A", "role": "GK"},       # ====== RED TEAM ======
+    "2" : {"x": 15, "y": 50, "team": "A", "role": "FIELD"},   # ====== RED TEAM ======
+    "101" : {"x": 85, "y": 40, "team":"B", "role": "FIELD"},  # ====== BLUE TEAM =====
+    "102" : {"x": 55, "y": 45, "team":"B", "role": "FIELD"},  # ====== BLUE TEAM =====
 }
 
 # PLAYERS
