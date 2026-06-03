@@ -60,11 +60,9 @@ class GoalkeeperAgent(PlayerAgent):
 
                     # 1. Atribuirea rolurilor (se executa o singura data)
                     # daca agentul NU este inca intr-o stare de aut, il punem sa aleaga
-                    if self.state not in [STATE_DO_THROW_IN, STATE_WAIT_THROW_IN]: # NOU
-                        if self.agent_id == message["last_touch"]:
-                            self.state = STATE_WAIT_THROW_IN
-                        else:
-                            self.state = STATE_DO_THROW_IN
+                    if self.state not in [STATE_DO_THROW_IN, STATE_WAIT_THROW_IN]: 
+
+                        self.state = STATE_WAIT_THROW_IN
                         intention = {
                             "agent_id" : self.agent_id,
                             "action" : self.state
@@ -86,30 +84,7 @@ class GoalkeeperAgent(PlayerAgent):
                     #==============================
                     #--------MEALY MACHINE---------
                     #==============================
-
-                    # Logica pentru pozitionarea portarului
-                    # identificam centrul portii noastre
-                    if float(self.start_x) < 50.0:
-                        goal_center_x, goal_center_y = 0.0, 50.0
-                    else:
-                        goal_center_x, goal_center_y = 100.0, 50.0
-                    
-                    # vectorul de la poarta catre minge
-                    dx = message["ball"]["x"] - goal_center_x
-                    dy = message["ball"]["y"] - goal_center_y
-
-                    distance_goal_to_ball = math.hypot(dx, dy)
-
-                    # daca distanta e mai mare decat raza noastra de 6 metri,
-                    # portarul trebuie sa stea pe arc
-                    if distance_goal_to_ball > 6.0:
-                        target_x = goal_center_x + (dx / distance_goal_to_ball) * 6.0
-                        target_y = goal_center_y + (dy / distance_goal_to_ball) * 6.0
-                    else:
-                        # mingea e foarte aproape
-                        target_x = message["ball"]["x"]
-                        target_y = message["ball"]["y"]
-
+        
                     distance_agent_to_ball = self.calculate_distance(message['ball']['x'],message['ball']['y'])
                     
                     # GUARD CLAUSE pentru stun
@@ -160,12 +135,78 @@ class GoalkeeperAgent(PlayerAgent):
                             self.dealer_socket.send_json(intention)
                         
 
-                    # COMPORTAMENTUL DE BAZA: APARAREA
+                    # COMPORTAMENTUL DE BAZA: APARAREA / REACTIA LA SUT
                     elif self.state in [STATE_IDLE, STATE_GK_DEFEND_GOAL]:
                         
+                        # identificam centrul portii noastre si linia de fund
+                        if float(self.start_x) < 50.0:
+                            goal_center_x, goal_center_y = 0.0, 50.0
+                        else:
+                            goal_center_x, goal_center_y = 100.0, 50.0
+
+                        # extragem datele dinamice ale mingii
+                        ball_x = message["ball"]["x"]
+                        ball_y = message["ball"]["y"]
+                        velocity_x = message["ball"]["velocity_x"]
+                        velocity_y = message["ball"]["velocity_y"]
+
+                        # Senzorul de sut
+                        # verificam daca mingea vine cu viteza spre poarta
+                        is_shot_coming = False
+                        # vine spre poarta din stanga
+                        if goal_center_x == 0.0 and velocity_x < -1.2:
+                            is_shot_coming = True
+
+                        # vine spre poarta din dreapta
+                        elif goal_center_x == 100.0 and velocity_x > 1.2:
+                            is_shot_coming = True
+
+                        # calculul traiectoriei (daca e sut)
+                        if is_shot_coming and abs(velocity_x) > 0.05:
+                            # calculam in cate cadre va ajunge mingea pe linia portii
+                            distance_x = abs(ball_x - goal_center_x)
+                            time_to_reach = distance_x / abs(velocity_x)
+
+                            # proiectam pozitia Y ideala unde va ateriza mingea
+                            predicted_y = ball_y + (velocity_y * time_to_reach)
+
+                            # introducerea erorii umane (balansarea AI)
+                            shot_speed = math.hypot(velocity_x, velocity_y)
+
+                            # Coeficient pentru eroare
+                            # mai mic, mai bun; mai mare, mai slab
+                            error_coefficient = 0.3
+                            # cu cat sutul e mai puternic, cu atat eroarea creste
+                            error_margin = shot_speed * error_coefficient
+                            predicted_y += random.uniform(-error_margin, error_margin)
+
+                            # incadram plonjonul in limitele portii
+                            target_y = max(38.0, min(62.0, predicted_y))
+                            
+                            # portarul ramane pe arcul sau de 6 metri,
+                            # dar pozitionat pe Y-ul de intersectie
+                            target_x = goal_center_x + (6.0 if goal_center_x == 0.0 else -6.0)
+                        
+                        else:
+                            # vectorul de la poarta catre minge
+                            dx = message["ball"]["x"] - goal_center_x
+                            dy = message["ball"]["y"] - goal_center_y
+
+                            distance_goal_to_ball = math.hypot(dx, dy)
+
+                            # daca distanta e mai mare decat raza noastra de 6 metri,
+                            # portarul trebuie sa stea pe arc
+                            if distance_goal_to_ball > 6.0:
+                                target_x = goal_center_x + (dx / distance_goal_to_ball) * 6.0
+                                target_y = goal_center_y + (dy / distance_goal_to_ball) * 6.0
+                            else:
+                                # mingea e foarte aproape
+                                target_x = message["ball"]["x"]
+                                target_y = message["ball"]["y"]
+                        
                         # trimitem pe retea DOAR daca starea s-a schimbat,
-                        # SAU daca mingea s-a miscat mai mult de 1.0 unitati
-                        if self.state != STATE_GK_DEFEND_GOAL or abs(target_y - self.last_target_y) > 1.0:
+                        # SAU daca mingea s-a miscat mai mult de 0.5 unitati
+                        if self.state != STATE_GK_DEFEND_GOAL or abs(target_y - self.last_target_y) > 0.5:
                             self.state = STATE_GK_DEFEND_GOAL
                             self.last_target_y = target_y
                             intention = {

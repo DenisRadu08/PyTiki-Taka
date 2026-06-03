@@ -20,8 +20,8 @@ class MatchEngine:
         self.poller.register(self.router_socket, zmq.POLLIN)
         # Mingea
         self.ball = {
-            "x": 50,
-            "y": 50,
+            "x": 50.0,
+            "y": 50.0,
             "velocity_x": 0.0,
             "velocity_y": 0.0
             }
@@ -33,6 +33,16 @@ class MatchEngine:
         self.last_touch = None
         # Cine are posesiea mingii
         self.possession = None
+        # Destinatarul pasei in desfasurare
+        self.intended_receiver = None
+        # Echipa care incepe de la mijloc
+        self.kickoff_team = random.choice(["A", "B"])
+        # Goluri
+        self.score_A = 0
+        self.score_B = 0
+        # Timp
+        self.start_time = None
+        self.match_duration_real_seconds = 180.0 # 3 minute
 
     
     def run(self):
@@ -86,6 +96,11 @@ class MatchEngine:
                                 self.ball["velocity_y"] = float(intention["kick_vy"])
                                 self.last_touch = intention["agent_id"] 
                                 self.possession = agent_id_str
+
+                                if "target_agent_id" in intention and intention["target_agent_id"] is not None:
+                                    self.intended_receiver = str(intention["target_agent_id"])
+                                elif str(intention["action"]) in [STATE_KICK, STATE_DRIBBLE, STATE_GK_CLEAR_BALL]:
+                                    self.intended_receiver = None
                             else:
                                 # printam tentativa de "frauda" pentru debug
                                 print(f"Motorul a respins sutul agentului {agent_id_str}. Era la {distance_to_ball:.2f} distanta de minge!")
@@ -115,35 +130,39 @@ class MatchEngine:
 
                 # daca suntem in CHASE, fugim spre minge (1.5 speed)
                 if player_data["state"] in [STATE_CHASE, STATE_DRIBBLE, STATE_DRIBBLE_DUEL]:
-                    self.move_player_towards(player_data, self.ball["x"], self.ball["y"], speed = 1.5)
+                    self.move_player_towards(player_data, self.ball["x"], self.ball["y"], speed = 0.85)
                 
                 # daca suntem in RESET, ne intoarcem la pozitia initiala de pe teren (1.0 speed)
                 elif player_data["state"] == STATE_RESET:
-                    self.move_player_towards(player_data, player_data["start_x"], player_data["start_y"], speed = 1.0)
+                    self.move_player_towards(player_data, player_data["start_x"], player_data["start_y"], speed = 0.6)
                 
                 # daca suntem in DO_THROW_IN, merge usor spre a bate out-ul (0.5 speed)
                 elif player_data["state"] == STATE_DO_THROW_IN:
-                    self.move_player_towards(player_data, self.ball["x"], self.ball["y"], speed = 0.5)
+                    self.move_player_towards(player_data, self.ball["x"], self.ball["y"], speed = 0.4)
 
                 # daca suntem in DEFEND_GOAL, il mutam catre tinta salvata in mintea serverului
                 elif player_data["state"] == STATE_GK_DEFEND_GOAL:
                     if "target_x" in player_data and "target_y" in player_data:
-                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 1.0)
+                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 0.85)
 
                 # daca suntem in ATTACK_SUPORT, agentul ataca poarta adversa
                 elif player_data["state"] == STATE_ATTACK_SUPPORT:
                     if "target_x" in player_data and "target_y" in player_data:
-                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 0.5)
+                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 0.7)
                 
                 # daca suntem in DEFEND_SUPPORT, agentul se pozitioneaza in aparare
                 elif player_data["state"] == STATE_DEFEND_SUPPORT:
                     if "target_x" in player_data and "target_y" in player_data:
-                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 0.8)
+                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 0.7)
                     
 
             if self.game_status in [STATUS_START_GAME, STATUS_GOAL]:
                 if self.are_players_ready():
                     self.game_status = STATUS_PLAYING
+                    
+                    # pornim ceasul doar la primul fluier de start
+                    if self.start_time is None:
+                        self.start_time = time.time()
 
             if self.game_status == STATUS_OUT:
                 if self.ball["velocity_x"] != 0.0 and self.ball["velocity_y"] != 0.0:
@@ -247,7 +266,7 @@ class MatchEngine:
 
                                         # TACKLE REUSIT => ATTACKER STUN
                                         if random.random() < tackle_chance:
-                                            attacker["stun_frames"] = random.randint(5,55)
+                                            attacker["stun_frames"] = random.randint(5,35)
                                             attacker["state"] = STATE_IDLE
                                             self.possession = defender_id
 
@@ -265,7 +284,7 @@ class MatchEngine:
                                         else:
                                             # tackle ratat din fata => Stun mediu
                                             if dot_product > 0.5:
-                                                stun = random.randint(20,35)
+                                                stun = random.randint(16,25)
                                             
                                             # tackle ratat din corp la corp => Stun mic
                                             elif dot_product >= -0.5:
@@ -273,7 +292,7 @@ class MatchEngine:
 
                                             # tackle ratat din spate => Stun mare
                                             else:
-                                                stun = random.randint(40,55)
+                                                stun = random.randint(26,35)
 
                                             defender["state"] = STATE_IDLE
                                             defender["stun_frames"] = stun
@@ -328,11 +347,13 @@ class MatchEngine:
                         ball_speed = math.hypot(self.ball["velocity_x"], self.ball["velocity_y"])
 
                         # daca e pasa/sut slab => Preluare / Prindere
-                        if ball_speed < 1.5:
+                        if ball_speed < 2.0:
                             self.ball["velocity_x"] = 0.0
                             self.ball["velocity_y"] = 0.0
                             self.last_touch = player_id
                             self.possession = player_id
+                            # a ajuns la cineva, stergem tinta
+                            self.intended_receiver = None
                             break # oprim cautarea ca sa nu loveasca 2 jucatori in aceeasi milisecunda
                         # daca e sut puternic => Ricoseu / Respingere
                         else:
@@ -342,6 +363,7 @@ class MatchEngine:
                             self.ball["velocity_y"] = deflection_y * random.uniform(ball_speed * 0.8, ball_speed * 1.5)
                             self.last_touch = player_id
                             self.possession = None
+                            self.intended_receiver = None
                             break
 
             # ==================================================
@@ -349,8 +371,9 @@ class MatchEngine:
             # ==================================================
 
             # OUT + GOAL?
+            # GOL pentru echipa B
             if self.ball['x'] <= 0:
-                if self.ball['y'] >= 40 and self.ball['y'] <=60:
+                if self.ball['y'] >= 41.0 and self.ball['y'] <= 59.0:
                     print("GOAL!!! GOAL!!! GOAL!!!")
                     self.game_status = STATUS_GOAL
                     self.possession = None
@@ -358,12 +381,15 @@ class MatchEngine:
                     self.ball['velocity_y'] = 0
                     self.ball['x'] = 50
                     self.ball['y'] = 50
+                    self.kickoff_team = "A" 
+                    self.score_B += 1
                 else:
                     self.ball['velocity_x'] *= -1
-                    
                     self.ball['x'] = 0
+
+            # GOL pentru echipa A
             if self.ball['x'] >= 100:
-                if self.ball['y'] >= 40 and self.ball['y'] <=60:
+                if self.ball['y'] >= 41.0 and self.ball['y'] <= 59.0:
                     print("GOAL!!! GOAL!!! GOAL!!!")
                     self.game_status = STATUS_GOAL
                     self.possession = None
@@ -371,6 +397,8 @@ class MatchEngine:
                     self.ball['velocity_y'] = 0
                     self.ball['x'] = 50
                     self.ball['y'] = 50
+                    self.kickoff_team = "B"
+                    self.score_A += 1
                 else:
                     self.ball['velocity_x'] *= -1
                     self.ball['x'] = 100
@@ -393,6 +421,16 @@ class MatchEngine:
                 self.ball['velocity_x'] = 0
                 self.ball['velocity_y'] = 0
 
+            # calculam timpul virtual curent
+            virtual_minutes = 0.0
+            if self.start_time is not None:
+                real_elapsed = time.time() - self.start_time
+                virtual_minutes = (real_elapsed / self.match_duration_real_seconds) * 90.0
+
+                # oprim ceasul la 90:00
+                if virtual_minutes > 90:
+                    virtual_minutes = 90.0
+
             # broadcast al jocului
             # dupa ce am facut update-ul agentilor
             game_state = {
@@ -400,7 +438,12 @@ class MatchEngine:
                 "players" : self.players,
                 "game_status" : self.game_status,
                 "last_touch" : self.last_touch,
-                "possession" : self.possession 
+                "possession" : self.possession,
+                "kickoff_team" : self.kickoff_team,
+                "intended_receiver" : self.intended_receiver,
+                "score_A" : self.score_A,
+                "score_B" : self.score_B,
+                "time" : virtual_minutes
             }
             
             
@@ -440,7 +483,7 @@ class MatchEngine:
 
             # daca un singur jucator e la distanta de >=2, nu e gata, deci
             # meciul nu incepe
-            if distance >= 2.0:
+            if distance >= 5.0:
                 return False
 
         # toti sunt la pozitiile lor!
