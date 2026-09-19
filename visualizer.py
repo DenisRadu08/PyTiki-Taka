@@ -92,9 +92,9 @@ class GameVisualizer:
 
         # 2. Desenam gazonul central
         field_rect = pygame.Rect(
-            self.stadium_padding_x - self.margin_x, 
+            self.stadium_padding_x - (self.margin_x * 2),  # <--- Dublat ca sa acopere sub poarta stanga
             self.stadium_padding_y - self.margin_y, 
-            self.play_width + (2 * self.margin_x), 
+            self.play_width + (4 * self.margin_x),         # <--- 4x ca sa acopere sub poarta dreapta
             self.play_height + (2 * self.margin_y)
         )
         pygame.draw.rect(self.screen, self.GREEN, field_rect)
@@ -302,12 +302,17 @@ class GameVisualizer:
 
                 # scalam dimensiunea jucatorului
                 p_radius = int(10 * self.scale)
-                shadow_offset = max(1, int(2 * self.scale))
+                shadow_offset = max(1, int(4 * self.scale))
                 
-                # marim usor razele agentilor pentru vizibilitate
-                pygame.draw.circle(self.screen, self.BLACK, (draw_x + shadow_offset, draw_y + shadow_offset), p_radius)
+                # Umbra semi-transparenta
+                shadow_surf = pygame.Surface((p_radius * 2, p_radius * 2), pygame.SRCALPHA)
+                pygame.draw.circle(shadow_surf, (0, 0, 0, 100), (p_radius, p_radius), p_radius)
+                self.screen.blit(shadow_surf, (draw_x - p_radius + shadow_offset, draw_y - p_radius + shadow_offset))
+
+                # 2. Jucatorul
                 pygame.draw.circle(self.screen, player_color, (draw_x, draw_y), p_radius)
                 pygame.draw.circle(self.screen, self.WHITE, (draw_x, draw_y), p_radius, max(1, int(1 * self.scale)))
+
 
                 # adaugare numar pe tricou
                 number_str = int(player_id) % 100
@@ -322,13 +327,47 @@ class GameVisualizer:
                 self.screen.blit(num_surf, num_rect)
 
             # 6. Desenarea mingii
-            b_radius = int(6 * self.scale)
-            shadow_offset_b = max(1, int(2 * self.scale))
+            b_radius = int(8 * self.scale)
+            shadow_offset_b = max(1, int(6 * self.scale))
             
-            pygame.draw.circle(self.screen, self.BLACK, (int(ball_x) + shadow_offset_b, int(ball_y) + shadow_offset_b), b_radius)
-            pygame.draw.circle(self.screen, self.WHITE, (int(ball_x), int(ball_y)), b_radius)
-            pygame.draw.circle(self.screen, self.BLACK, (int(ball_x), int(ball_y)), b_radius, 1)
+            # Umbra Mingii (mai departe de sol = impresia ca mingea sare)
+            ball_shadow = pygame.Surface((b_radius * 2, b_radius * 2), pygame.SRCALPHA)
+            pygame.draw.circle(ball_shadow, (0, 0, 0, 120), (b_radius, b_radius), b_radius)
+            self.screen.blit(ball_shadow, (int(ball_x) - b_radius + shadow_offset_b, int(ball_y) - b_radius + shadow_offset_b))
+
+            # Mingea in sine (Sfera 3D cu shading)
+            pygame.draw.circle(self.screen, (240, 240, 240), (int(ball_x), int(ball_y)), b_radius) # Baza alba
             
+            # Desenam modelul clasic de minge (Pentagon central + Linii)
+            pentagon_radius = max(2, int(b_radius * 0.45))
+            pentagon_points = []
+            
+            # Calculam matematic cele 5 colturi ale pentagonului
+            for i in range(5):
+                angle = i * (2 * math.pi / 5) - (math.pi / 2) 
+                px = int(ball_x) + pentagon_radius * math.cos(angle)
+                py = int(ball_y) + pentagon_radius * math.sin(angle)
+                pentagon_points.append((px, py))
+            
+            if len(pentagon_points) >= 3:
+                # 1. Desenam pentagonul negru in centru
+                pygame.draw.polygon(self.screen, (30, 30, 30), pentagon_points)
+                
+                # 2. Desenam "cusaturile" care pleaca din colturi spre marginea mingii
+                for px, py in pentagon_points:
+                    dx = px - int(ball_x)
+                    dy = py - int(ball_y)
+                    dist = math.hypot(dx, dy)
+                    if dist > 0:
+                        edge_x = int(ball_x) + (dx / dist) * b_radius
+                        edge_y = int(ball_y) + (dy / dist) * b_radius
+                        pygame.draw.line(self.screen, (30, 30, 30), (px, py), (edge_x, edge_y), max(1, int(1 * self.scale)))
+            # Contur fin pe exterior
+            pygame.draw.circle(self.screen, self.BLACK, (int(ball_x), int(ball_y)), b_radius, max(1, int(1 * self.scale)))
+            # Highlight de lumina subtil in stanga sus
+            pygame.draw.arc(self.screen, self.WHITE, (int(ball_x)-b_radius, int(ball_y)-b_radius, b_radius*2, b_radius*2), math.pi/2, math.pi, max(1, int(1*self.scale)))
+
+
             # =======================================================
             # 8. CELEBRAREA GOLULUI
             # =======================================================
@@ -369,6 +408,24 @@ class GameVisualizer:
 
             # ======================================================
             
+            # =======================================================
+            # EFECT DE NOAPTE (SPOTLIGHT PE GAZON)
+            # =======================================================
+            # Cream o umbra peste tot ecranul (opacitate 170 din 255)
+            darkness = pygame.Surface((self.screen.get_width(), self.screen.get_height()), pygame.SRCALPHA)
+            darkness.fill((0, 0, 0, 110)) 
+
+            # Decupam o "gaura de lumina" perfect deasupra gazonului (Alpha 0)
+            light_rect = pygame.Rect(
+                self.stadium_padding_x - (self.margin_x * 2), # <--- Dublat (acopera poarta stanga)
+                self.stadium_padding_y - self.margin_y, 
+                self.play_width + (4 * self.margin_x),        # <--- 4x pentru a dubla pe ambele parti (acopera poarta dreapta)
+                self.play_height + (2 * self.margin_y)
+            )
+            darkness.fill((255, 255, 255, 0), light_rect, special_flags=pygame.BLEND_RGBA_MIN)
+            
+            # Adaugam intunericul peste tribune si jucatori (gazonul ramane luminat prin gaura)
+            self.screen.blit(darkness, (0, 0))
 
             # =======================================================
             # DESENAREA BUTOANELOR IN TIMPUL MECIULUI (Ghost HUD)
