@@ -320,7 +320,7 @@ class PlayerAgent:
                         ball_shift_x = message["ball"]["x"] - 50.0
 
                         # 2. coeficientul de urcare
-                        # 0.6 inseamna ca urca 80% din minge
+                        # 0.8 inseamna ca urca 80% din minge
                         slide_coefficient = 0.8
 
                         # impuls ofensiv
