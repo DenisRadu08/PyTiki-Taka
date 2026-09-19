@@ -1,3 +1,4 @@
+from launcher import get_command
 import pygame
 import zmq
 import json
@@ -47,6 +48,11 @@ class GameVisualizer:
         self.sub_socket.setsockopt_string(zmq.SUBSCRIBE,"")
         self.sub_socket.connect("tcp://localhost:5555")
 
+        self.simulation_started = True
+        # Lansam motorul imediat ce visualizer-ul se deshide
+        print ("Lansam Match Engine-ul in fundal...")
+        self.engine_process = subprocess.Popen(get_command("--engine"))
+
         # setam culorile
         self.GREEN = (34, 139, 34) # gazon
         self.DARK_GREEN = (28, 115, 28) # gazoninchis pentru dungi
@@ -54,7 +60,6 @@ class GameVisualizer:
         self.RED = (220, 20, 60) # Echipa A
         self.BLUE = (30, 144, 255) # Echipa B
         self.BLACK = (0, 0, 0) # umbre, contururi
-        self.simulation_started = False
 
         # Culori pentru tribune (Gri beton/plastic)
         self.STAND_GRAY = (100, 100, 100)
@@ -73,7 +78,6 @@ class GameVisualizer:
         
         self.huge_font = pygame.font.SysFont("Arial", int(80 * self.scale), bold=True)
         
-        self.engine_process = None
     
     def stop_engine(self):
         # Opreste curat procesele din fundal pentru a nu lasa zombi.
@@ -248,52 +252,22 @@ class GameVisualizer:
                 if event.type == pygame.MOUSEBUTTONDOWN:
                     mouse_pos = event.pos
 
-                    # Cazul A: Meniul de Start
-                    if not self.simulation_started:
-                        if hasattr(self, 'button_rect') and self.button_rect.collidepoint(mouse_pos):
-                            print("Lansam Match Engine-ul in fundal...")
-                            self.simulation_started = True
-                            self.engine_process = subprocess.Popen([sys.executable, "main.py"])
-                    
                     # Cazul B: In timpul simularii (Butoanele mici)
-                    else:
-                        if hasattr(self, 'btn_restart') and self.btn_restart.collidepoint(mouse_pos):
-                            print("Restartam meciul...")
-                            self.stop_engine()
-                            time.sleep(0.5) # Asteptam 500ms ca Windows-ul sa elibereze porturile ZMQ
-                            self.engine_process = subprocess.Popen([sys.executable, "main.py"])
+                    if hasattr(self, 'btn_restart') and self.btn_restart.collidepoint(mouse_pos):
+                        print("Restartam meciul...")
+                        self.stop_engine()
+                        time.sleep(0.5) # Asteptam 500ms ca Windows-ul sa elibereze porturile ZMQ
+                        self.engine_process = subprocess.Popen(get_command("--engine"))
                             
-                        elif hasattr(self, 'btn_quit') and self.btn_quit.collidepoint(mouse_pos):
-                            print("Oprim jocul de tot...")
-                            self.stop_engine()
-                            pygame.quit()
-                            return
+                    elif hasattr(self, 'btn_quit') and self.btn_quit.collidepoint(mouse_pos):
+                        print("Oprim jocul de tot...")
+                        self.stop_engine()
+                        pygame.quit()
+                        return
                     
             
             # 2. desenam terenul
             self.draw_pitch()
-
-            # meniul de start
-            if not self.simulation_started:
-                # dimensiunile butonului
-                btn_w, btn_h = int(300 * self.scale), int(80 * self.scale)
-                self.button_rect = pygame.Rect(0, 0, btn_w, btn_h)
-
-                self.button_rect.center = (self.screen.get_width() // 2, self.screen.get_height() // 2)
-
-                # Desenam butonul (Alb cu umbra)
-                shadow_rect = self.button_rect.copy()
-                shadow_rect.y += 5
-                pygame.draw.rect(self.screen, self.BLACK, shadow_rect, border_radius=15)
-                pygame.draw.rect(self.screen, self.WHITE, self.button_rect, border_radius=15)
-                
-                # Randam textul
-                text_surf = self.font.render("START MATCH", True, self.BLACK)
-                text_rect = text_surf.get_rect(center=self.button_rect.center)
-                self.screen.blit(text_surf, text_rect)
-
-                pygame.display.flip()
-                continue
             
             # simularea in desfasurare
             try:

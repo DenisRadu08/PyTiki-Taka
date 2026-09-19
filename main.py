@@ -20,8 +20,7 @@ def start_agent(agent_id_str):
 
     agent.run()
 
-
-if __name__ == "__main__":
+def run_game():
     processes = []
 
     # 1. Pornim motorul ca daemon
@@ -38,3 +37,6 @@ if __name__ == "__main__":
     # 3. Tinem main.py in viata. (Daca main.py pica, toti daemonii mor odata cu el)
     for p in processes:
         p.join()
+
+if __name__ == "__main__":
+    run_game()
