@@ -5,7 +5,7 @@ import json
 import subprocess
 import sys
 import time
-from config import STATUS_GOAL, STATUS_OUT
+from config import STATUS_GOAL, STATUS_OUT, STATUS_MATCH_OVER, STATUS_PLAYING, STATUS_START_GAME, STATE_KICK
 import math
 import random
 
@@ -13,6 +13,47 @@ class GameVisualizer:
     def __init__(self):
         # pornim motorul grafic
         pygame.init()
+        pygame.mixer.init() # Init audio mixer
+
+        # ==========================================
+        # AUDIO LOADING (Failsafe)
+        # ==========================================
+        self.sound_whistle = None
+        try:
+            self.sound_whistle = pygame.mixer.Sound("assets/sounds/whistle.mp3")
+        except FileNotFoundError:
+            print("WARNING: Nu am gasit assets/sounds/whistle.mp3 - Jucam fara sunet.")
+
+        
+        try:
+            pygame.mixer.music.load("assets/sounds/crowd.mp3")
+            pygame.mixer.music.set_volume(0.3) # Volum redus pt fundal
+            pygame.mixer.music.play(-1) # -1 inseamna Loop Infinit
+        except FileNotFoundError:
+            print("WARNING: Nu am gasit assets/sounds/crowd.mp3 - Jucam in liniste.")
+            
+        self.sound_goal = None
+        try:
+            self.sound_goal = pygame.mixer.Sound("assets/sounds/goal.mp3")
+        except FileNotFoundError:
+            print("WARNING: Nu am gasit assets/sounds/goal.mp3")
+
+        self.sound_gasp = None
+        try:
+            self.sound_gasp = pygame.mixer.Sound("assets/sounds/gasp.mp3")
+        except FileNotFoundError:
+            print("WARNING: Nu am gasit assets/sounds/gasp.mp3")
+
+        self.sound_kick = None
+        try:
+            self.sound_kick = pygame.mixer.Sound("assets/sounds/kick.mp3")
+        except FileNotFoundError:
+            print("WARNING: Nu am gasit assets/sounds/kick.mp3")
+
+        # Flag-uri pentru a preveni spam-ul audio (fluierat de 60 de ori pe secunda)
+        self.match_over_whistle_played = False
+        self.gasp_played_for_this_shot = False
+        self.last_ball_speed = 0.0
 
         # =======================================================
         # SISTEM RESPONSIVE FULLSCREEN (Auto-Scalare)
@@ -281,6 +322,50 @@ class GameVisualizer:
                     pygame.display.flip()
                     continue
                 message = self.last_message
+            
+
+            # =======================================================
+            # SMART AUDIO TRIGGERS
+            # =======================================================
+            current_status = message.get("game_status")
+            if not hasattr(self, 'last_status'):
+                self.last_status = current_status
+
+            # Daca jocul abia incepe SAU se reia dupa un gol -> Kickoff Whistle!
+            if current_status == STATUS_PLAYING and self.last_status in [STATUS_START_GAME, STATUS_GOAL]:
+                if self.sound_whistle:
+                    self.sound_whistle.play()
+                if self.sound_goal:
+                    self.sound_goal.stop() # Oprim celebrarea golului cand se da fluierul de reluare
+            
+            # Daca meciul se termina (Fluier Final!)
+            if current_status == STATUS_MATCH_OVER and not self.match_over_whistle_played:
+                if self.sound_whistle:
+                    self.sound_whistle.play()
+                self.match_over_whistle_played = True
+                
+            # Daca s-a marcat un gol
+            if current_status == STATUS_GOAL and self.last_status != STATUS_GOAL:
+                if self.sound_goal:
+                    self.sound_goal.play()
+            
+            # Logica de Fizica a mingii pentru KICK si GASP
+            ball_vx = message["ball"]["velocity_x"]
+            ball_vy = message["ball"]["velocity_y"]
+            current_ball_speed = math.hypot(ball_vx, ball_vy)
+            
+            # Daca mingea prinde brusc viteza mare (Delta > 0.8), a fost lovita!
+            if current_ball_speed - self.last_ball_speed > 0.8:
+                
+                # 1. Sunetul fizic de lovitura
+                if self.sound_kick:
+                    self.sound_kick.play()
+                    
+            self.last_ball_speed = current_ball_speed
+            
+                
+            self.last_status = current_status
+
 
             # 4. Extragem X si Y pentru minge
             ball_x = self.stadium_padding_x + (message["ball"]["x"] * (self.play_width / 100.0))
@@ -407,6 +492,30 @@ class GameVisualizer:
                 self.screen.blit(text_out, out_rect)
 
             # ======================================================
+
+            # =======================================================
+            # 10. ECRANUL DE FINAL DE MECI (MATCH OVER)
+            # =======================================================
+            elif message.get("game_status") == STATUS_MATCH_OVER:
+                # O folie semi-transparenta neagra peste tot ecranul
+                overlay = pygame.Surface((self.screen.get_width(), self.screen.get_height()), pygame.SRCALPHA)
+                overlay.fill((0, 0, 0, 180)) # 180 = Destul de intunecat pentru contrast
+                self.screen.blit(overlay, (0, 0))
+
+                # Text FULL TIME
+                text_over = self.huge_font.render("FULL TIME", True, self.WHITE)
+                over_rect = text_over.get_rect(center=(self.screen.get_width() // 2, self.screen.get_height() // 2 - int(50 * self.scale)))
+                self.screen.blit(text_over, over_rect)
+
+                # Scorul Final (folosind un auriu frumos)
+                score_a = message.get("score_A", 0)
+                score_b = message.get("score_B", 0)
+                text_score = self.font.render(f"RED {score_a} - {score_b} BLUE", True, (255, 215, 0))
+                score_rect = text_score.get_rect(center=(self.screen.get_width() // 2, self.screen.get_height() // 2 + int(30 * self.scale)))
+                self.screen.blit(text_score, score_rect)
+
+
+            # =======================================================
             
             # =======================================================
             # EFECT DE NOAPTE (SPOTLIGHT PE GAZON)
@@ -486,27 +595,49 @@ class GameVisualizer:
             secs = int((v_time - mins) * 60)
             time_str = f"{mins:02d}:{secs:02d}"
 
-            # 3. Definim dimensiunile HUD-ului
-            hud_w = int(200 * self.scale)
-            hud_h = int(60 * self.scale)
-            hud_x = (self.screen.get_width() - hud_w) // 2
-            hud_y = int(15 * self.scale)
+            # 3. Definim latimile pentru fiecare segment din bara
+            box_h = int(35 * self.scale)
+            team_w = int(70 * self.scale)
+            score_w = int(60 * self.scale)
+            time_w = int(70 * self.scale)
+            total_w = team_w + score_w + team_w + time_w
 
-            # 4. Desenam fundalul tabelei (un dreptunghi negru semi-transparent)
-            hud_surf = pygame.Surface((hud_w, hud_h), pygame.SRCALPHA)
-            pygame.draw.rect(hud_surf, (20, 20, 20, 220), hud_surf.get_rect(), border_radius=10)
-            pygame.draw.rect(hud_surf, self.WHITE, hud_surf.get_rect(), max(1, int(2*self.scale)), border_radius=10)
-            self.screen.blit(hud_surf, (hud_x, hud_y))
+            # 4. Plasament: Stanga-Sus (cu o mica margine ca la TV)
+            start_x = int(50 * self.scale)
+            start_y = int(40 * self.scale)
 
-            # 5. Randam textul
-            score_text = self.small_font.render(f"RED   {score_a} - {score_b}   BLUE", True, self.WHITE)
-            time_text = self.small_font.render(time_str, True, (255, 215, 0)) # Culoare aurie pentru timp
+            # 5. Umbra 3D sub intregul HUD
+            shadow = pygame.Surface((total_w, box_h), pygame.SRCALPHA)
+            shadow.fill((0, 0, 0, 120))
+            self.screen.blit(shadow, (start_x + int(4 * self.scale), start_y + int(4 * self.scale)))
 
-            # 6. Asezam textul fix pe centrul ecranului (relativ la hud_y)
-            screen_center_x = self.screen.get_width() // 2
-            self.screen.blit(score_text, score_text.get_rect(center=(screen_center_x, hud_y + int(hud_h * 0.35))))
-            self.screen.blit(time_text, time_text.get_rect(center=(screen_center_x, hud_y + int(hud_h * 0.70))))
+            # 6. Segmentul 1: RED (Fundal Rosu, Text Alb)
+            rect_red = pygame.Rect(start_x, start_y, team_w, box_h)
+            pygame.draw.rect(self.screen, self.RED, rect_red)
+            text_red = self.small_font.render("RED", True, self.WHITE)
+            self.screen.blit(text_red, text_red.get_rect(center=rect_red.center))
+
+            # 7. Segmentul 2: SCOR (Fundal Alb, Text Negru)
+            rect_score = pygame.Rect(start_x + team_w, start_y, score_w, box_h)
+            pygame.draw.rect(self.screen, self.WHITE, rect_score)
+            text_sc = self.small_font.render(f"{score_a} - {score_b}", True, self.BLACK)
+            self.screen.blit(text_sc, text_sc.get_rect(center=rect_score.center))
+
+            # 8. Segmentul 3: BLUE (Fundal Albastru, Text Alb)
+            rect_blue = pygame.Rect(start_x + team_w + score_w, start_y, team_w, box_h)
+            pygame.draw.rect(self.screen, self.BLUE, rect_blue)
+            text_blue = self.small_font.render("BLUE", True, self.WHITE)
+            self.screen.blit(text_blue, text_blue.get_rect(center=rect_blue.center))
             
+            # 9. Segmentul 4: TIMP (Fundal Gri inchis, Text Auriu)
+            rect_time = pygame.Rect(start_x + team_w + score_w + team_w, start_y, time_w, box_h)
+            pygame.draw.rect(self.screen, (30, 30, 30), rect_time)
+            text_time = self.small_font.render(time_str, True, (255, 215, 0))
+            self.screen.blit(text_time, text_time.get_rect(center=rect_time.center))
+
+            # 10. Contur fin alb in jurul intregului HUD pentru un aspect "sharp"
+            pygame.draw.rect(self.screen, self.WHITE, (start_x, start_y, total_w, box_h), max(1, int(2 * self.scale)))
+
             # Actualizam ecranul
             pygame.display.flip()
 

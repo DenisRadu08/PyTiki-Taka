@@ -1,3 +1,4 @@
+from config import STATUS_MATCH_OVER
 import zmq
 import time
 import json
@@ -40,9 +41,23 @@ class MatchEngine:
         # Goluri
         self.score_A = 0
         self.score_B = 0
-        # Timp
+        # Timp si setari implicite
         self.start_time = None
         self.match_duration_real_seconds = 180.0 # 3 minute
+
+        # Citim settings.json (bridge-ul catre Launcher)
+        try:
+            with open("settings.json", "r") as f:
+                settings = json.load(f)
+                match_rules = settings.get("match_rules", {})
+
+                # Suprascriem varibilele daca exista in fisier
+                if "match_duration_real_seconds" in match_rules:
+                    self.match_duration_real_seconds = float(match_rules["match_duration_real_seconds"])
+                
+                print(f"Setari incarcate din JSON: Timp={self.match_duration_real_seconds}s")
+        except FileNotFoundError:
+            print("Nu s-a gasit settings.json. Folosim setarile implicite.")
 
     
     def run(self):
@@ -430,6 +445,18 @@ class MatchEngine:
                 # oprim ceasul la 90:00
                 if virtual_minutes > 90:
                     virtual_minutes = 90.0
+            
+            # ==================================================
+            # -------------- LOGICA DE MATCH OVER --------------
+            # ==================================================
+            # Daca timpul a atins 90 minute (si nu suntem deja in match over)
+            if virtual_minutes >= 90.0 and self.game_status != STATUS_MATCH_OVER:
+                print("MATCH OVER! Fluier final.")
+                self.game_status = STATUS_MATCH_OVER
+
+                # Oprim mingea pentru a semnaliza sfarsitul
+                self.ball['velocity_x'] *= 0.2
+                self.ball['velocity_y'] *= 0.2
 
             # broadcast al jocului
             # dupa ce am facut update-ul agentilor

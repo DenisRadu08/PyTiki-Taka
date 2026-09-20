@@ -738,7 +738,7 @@ class PlayerAgent:
 
                         # Scor de baza: 150 puncte minus distanta
                         penalty_for_distance = 5.5
-                        kick_score = 270.0 - (distance_ball_to_goal * penalty_for_distance)
+                        kick_score = 450.0 - (distance_ball_to_goal * penalty_for_distance)
 
                         # normalizarea vectorului de sut
                         if distance_ball_to_goal > 0.01:
