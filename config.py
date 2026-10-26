@@ -73,5 +73,20 @@ STARTING_POSITIONS = {
     "111" : {"x": 55, "y": 35, "team":"B", "role": "FIELD"},  # ====== BLUE TEAM =====
 }
 
+# DEAD BALL (OUT / viitoare CORNER / GOAL KICK)
+# viteza cu care se pozitioneaza jucatorii care asteapta
+WAIT_POSITIONING_SPEED = 0.3
+
+# echipa care REPUNE: urca si ofera optiuni langa minge
+RESTART_ATTACK_X_PULL = 0.35    # cat se apropie de minge pe X (0 = ramane, 1 = ajunge la minge)
+RESTART_ATTACK_Y_PULL = 0.35    # cat se apropie de minge pe Y
+RESTART_ATTACK_PUSH = 10.0      # cu cate unitati urca in plus spre poarta adversa
+
+# echipa care APARA: se retrage, se strange pe partea mingii, sta intre minge si poarta
+RESTART_DEFEND_X_PULL = 0.15    # cat se apropie de minge pe X
+RESTART_DEFEND_Y_PULL = 0.5     # cat se strange pe Y spre minge (acoperire)
+RESTART_DEFEND_DROP = 8.0       # cu cate unitati se retrage spre propria poarta
+RESTART_DEFEND_GOALSIDE_MARGIN = 3.0  # distanta minima in spatele mingii (goal-side)
+
 # PLAYERS
 NUM_OF_PLAYERS = 10

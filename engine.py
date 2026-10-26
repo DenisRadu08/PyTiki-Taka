@@ -155,6 +155,11 @@ class MatchEngine:
                 elif player_data["state"] == STATE_DO_THROW_IN:
                     self.move_player_towards(player_data, self.ball["x"], self.ball["y"], speed = 0.4)
 
+                # daca suntem in WAIT_THROW_IN, ne asezam incet spre tinta primita de la agent
+                elif player_data["state"] == STATE_WAIT_THROW_IN:
+                    if "target_x" in player_data and "target_y" in player_data:
+                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = WAIT_POSITIONING_SPEED)
+
                 # daca suntem in DEFEND_GOAL, il mutam catre tinta salvata in mintea serverului
                 elif player_data["state"] == STATE_GK_DEFEND_GOAL:
                     if "target_x" in player_data and "target_y" in player_data:

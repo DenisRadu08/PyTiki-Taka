@@ -37,6 +37,35 @@ class PlayerAgent:
         self.sub_socket.connect("tcp://localhost:5555")
         self.dealer_socket.connect("tcp://localhost:5556")
 
+    def get_restart_position(self, ball_x, ball_y, has_restart):
+        """
+        Pozitia tactica a unui jucator (care NU executa repunerea) cat timp mingea e oprita.
+        has_restart = True  -> echipa care repune: urca si ofera optiuni langa minge
+        has_restart = False -> echipa care apara: se retrage, se strange spre minge si sta intre minge si poarta
+        """
+        # in ce directie ataca echipa mea (+1 spre dreapta, -1 spre stanga)
+        attack_dir = 1.0 if float(self.start_x) < 50.0 else -1.0
+
+        if has_restart:
+            # urcam + ne apropiem de minge ca sa oferim pase scurte
+            tx = self.start_x + (ball_x - self.start_x) * RESTART_ATTACK_X_PULL + attack_dir * RESTART_ATTACK_PUSH
+            ty = self.start_y + (ball_y - self.start_y) * RESTART_ATTACK_Y_PULL
+        else:
+            # ne retragem spre propria poarta, dar ne strangem pe partea mingii
+            tx = self.start_x + (ball_x - self.start_x) * RESTART_DEFEND_X_PULL - attack_dir * RESTART_DEFEND_DROP
+            ty = self.start_y + (ball_y - self.start_y) * RESTART_DEFEND_Y_PULL
+
+            # ramanem goal-side: intre minge si propria poarta, nu in fata mingii
+            if attack_dir > 0:
+                tx = min(tx, ball_x - RESTART_DEFEND_GOALSIDE_MARGIN)
+            else:
+                tx = max(tx, ball_x + RESTART_DEFEND_GOALSIDE_MARGIN)
+
+        # ramanem pe teren
+        tx = max(5.0, min(95.0, tx))
+        ty = max(3.0, min(97.0, ty))
+        return tx, ty
+
     def run(self):
         # Inregistrare agenti
         intention = {
@@ -146,6 +175,14 @@ class PlayerAgent:
                             "agent_id" : self.agent_id,
                             "action" : self.state
                         }
+
+                        # cei care asteapta se aseaza tactic: echipa care repune urca,
+                        # echipa care apara se retrage dar acopera mingea
+                        if self.state == STATE_WAIT_THROW_IN:
+                            my_team_has_restart = (self.team != last_touch_team)
+                            intention["target_x"], intention["target_y"] = self.get_restart_position(
+                                message["ball"]["x"], message["ball"]["y"], my_team_has_restart)
+
                         self.dealer_socket.send_json(intention)
                     
                     # 2. Executia (se verifica fiecare cadru cat timp e aut)

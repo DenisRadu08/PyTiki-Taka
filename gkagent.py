@@ -65,7 +65,10 @@ class GoalkeeperAgent(PlayerAgent):
                         self.state = STATE_WAIT_THROW_IN
                         intention = {
                             "agent_id" : self.agent_id,
-                            "action" : self.state
+                            "action" : self.state,
+                            # portarul ramane unde este (suprascrie tinta veche de la DEFEND_GOAL)
+                            "target_x" : self.x,
+                            "target_y" : self.y
                         }
                         self.dealer_socket.send_json(intention)
                     
