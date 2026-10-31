@@ -5,7 +5,7 @@ import json
 import subprocess
 import sys
 import time
-from config import STATUS_GOAL, STATUS_OUT, STATUS_MATCH_OVER, STATUS_PLAYING, STATUS_START_GAME, STATE_KICK
+from config import STATUS_GOAL, STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_MATCH_OVER, STATUS_PLAYING, STATUS_START_GAME, STATE_KICK
 import math
 import random
 
@@ -115,7 +115,7 @@ class GameVisualizer:
         self.random_gen = random.Random(42)
         
         self.font = pygame. font.SysFont("Arial", int(48 * self.scale), bold = True)
-        self.small_font = pygame.font.SysFont("Arial", int(18 * self.scale), bold=True)
+        self.small_font = pygame.font.SysFont("Arial", max(9, int(11 * self.scale)), bold=True)
         
         self.huge_font = pygame.font.SysFont("Arial", int(80 * self.scale), bold=True)
         
@@ -385,9 +385,9 @@ class GameVisualizer:
                 else:
                     player_color = (128, 128, 128)
 
-                # scalam dimensiunea jucatorului
-                p_radius = int(10 * self.scale)
-                shadow_offset = max(1, int(4 * self.scale))
+                # scalam dimensiunea jucatorului (aerisire vizuala teren)
+                p_radius = max(5, int(7.5 * self.scale))
+                shadow_offset = max(1, int(3 * self.scale))
                 
                 # Umbra semi-transparenta
                 shadow_surf = pygame.Surface((p_radius * 2, p_radius * 2), pygame.SRCALPHA)
@@ -412,8 +412,8 @@ class GameVisualizer:
                 self.screen.blit(num_surf, num_rect)
 
             # 6. Desenarea mingii
-            b_radius = int(8 * self.scale)
-            shadow_offset_b = max(1, int(6 * self.scale))
+            b_radius = max(3, int(5.0 * self.scale))
+            shadow_offset_b = max(1, int(4 * self.scale))
             
             # Umbra Mingii (mai departe de sol = impresia ca mingea sare)
             ball_shadow = pygame.Surface((b_radius * 2, b_radius * 2), pygame.SRCALPHA)
@@ -490,6 +490,24 @@ class GameVisualizer:
                 # Desenam textul alb
                 out_rect = text_out.get_rect(center=out_pos)
                 self.screen.blit(text_out, out_rect)
+
+            elif message.get("game_status") == STATUS_CORNER:
+                text_corner = self.font.render("CORNER", True, self.BLACK)
+                text_shadow = self.font.render("CORNER", True, self.WHITE)
+                corner_pos = (self.screen.get_width() // 2, self.stadium_padding_y - int(10 * self.scale))
+                shadow_rect = text_shadow.get_rect(center=(corner_pos[0] + 3, corner_pos[1] + 3))
+                self.screen.blit(text_shadow, shadow_rect)
+                corner_rect = text_corner.get_rect(center=corner_pos)
+                self.screen.blit(text_corner, corner_rect)
+
+            elif message.get("game_status") == STATUS_GOAL_KICK:
+                text_gk = self.font.render("AUT DE POARTA", True, self.BLACK)
+                text_shadow = self.font.render("AUT DE POARTA", True, self.WHITE)
+                gk_pos = (self.screen.get_width() // 2, self.stadium_padding_y - int(10 * self.scale))
+                shadow_rect = text_shadow.get_rect(center=(gk_pos[0] + 3, gk_pos[1] + 3))
+                self.screen.blit(text_shadow, shadow_rect)
+                gk_rect = text_gk.get_rect(center=gk_pos)
+                self.screen.blit(text_gk, gk_rect)
 
             # ======================================================
 

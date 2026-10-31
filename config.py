@@ -7,6 +7,10 @@ STATE_KICK = "KICK"
 STATE_RESET = "RESET"
 STATE_DO_THROW_IN = "DO_THROW_IN"
 STATE_WAIT_THROW_IN = "WAIT_THROW_IN"
+STATE_DO_CORNER = "DO_CORNER"
+STATE_WAIT_CORNER = "WAIT_CORNER"
+STATE_DO_GOAL_KICK = "DO_GOAL_KICK"
+STATE_WAIT_GOAL_KICK = "WAIT_GOAL_KICK"
 STATE_DRIBBLE = "DRIBBLE"
 STATE_DRIBBLE_DUEL = "DRIBBLE_DUEL"
 STATE_PASS = "PASS"
@@ -22,6 +26,8 @@ STATE_GK_HOLD_BALL = "GK_HOLD_BALL"
 STATUS_PLAYING = "PLAYING"
 STATUS_GOAL = "GOAL"
 STATUS_OUT = "OUT"
+STATUS_CORNER = "CORNER"
+STATUS_GOAL_KICK = "GOAL_KICK"
 STATUS_START_GAME = "START_GAME"
 STATUS_MATCH_OVER = "MATCH_OVER"
 
@@ -73,9 +79,37 @@ STARTING_POSITIONS = {
     "111" : {"x": 55, "y": 35, "team":"B", "role": "FIELD"},  # ====== BLUE TEAM =====
 }
 
-# DEAD BALL (OUT / viitoare CORNER / GOAL KICK)
-# viteza cu care se pozitioneaza jucatorii care asteapta
-WAIT_POSITIONING_SPEED = 0.3
+# DEAD BALL (OUT / CORNER / GOAL KICK)
+# viteza cu care se pozitioneaza jucatorii care asteapta (alergare tactica in careu / teren)
+WAIT_POSITIONING_SPEED = 0.70
+# viteza executantului catre minge la faza fixa
+TAKER_POSITIONING_SPEED = 0.70
+# fluier dinamic arbitrul: timp minim de asezare si timp maxim de siguranta (secunde)
+OUT_OF_PLAY_ROLL_SECONDS = 1.6       # cate secunde vedem mingea cum iese din teren (slow-motion) inainte sa fie pusa pe punct
+GOAL_CELEBRATION_SECONDS = 3.5       # cate secunde ramane mingea in plasa portii dupa gol inainte de centrare
+RESTART_PREPARE_MIN_SECONDS = 3.2
+RESTART_PREPARE_MAX_SECONDS = 4.8
+RESTART_PREPARE_SECONDS = 3.0  # mentinut pentru compatibilitate
+
+# GOALKEEPING & DEFLECTIONS
+GK_SAVE_RADIUS = 3.0                 # raza de plonjon / acoperire portar (marita usor pentru parade spectaculoase)
+GK_DIVE_SPEED = 1.25                 # viteza de deplasare la plonjon pentru a apara sutul spre colturi
+GK_CATCH_SPEED_THRESHOLD = 1.6       # suturi sub aceasta viteza sau pe centrul corpului sunt prinse direct
+GK_PARRY_CORNER_CHANCE = 0.50        # 50% sanse ca suturile tari sa fie deviate peste linia de fund in CORNER
+GK_PARRY_REBOUND_CHANCE = 0.30       # 30% sanse ca suturile tari sa fie respinse in fata portii (rebound)
+GK_PARRY_HOLD_CHANCE = 0.20          # 20% sanse de prindere la sut tare
+
+# FIZICA SI SPATIERE (AERISIREA TERENULUI)
+PLAYER_COLLISION_DIAMETER = 1.4      # diametru coliziune jucator-jucator (redus de la 2.0 pentru spatii mai aerisite)
+OUTFIELD_BALL_RADIUS = 1.3           # raza de control/interceptie minge pentru jucatorii de camp (redusa de la 2.0)
+
+# SUTURI SI FINALIZARE
+SHOT_POWER_MIN = 2.4                 # forta minima la sut (plasat / finete)
+SHOT_POWER_MAX = 3.3                 # forta maxima la sut (puternic, dar uman si parabil)
+
+# AUT DE MARGINE (OPTIUNI DE PASA SCURTA)
+THROW_IN_SUPPORT_DIST_SHORT = 9.0    # distanta primului coechipier de sprijin scurt la aut
+THROW_IN_SUPPORT_DIST_MID = 14.0     # distanta celui de-al doilea coechipier de sprijin la aut
 
 # echipa care REPUNE: urca si ofera optiuni langa minge
 RESTART_ATTACK_X_PULL = 0.35    # cat se apropie de minge pe X (0 = ramane, 1 = ajunge la minge)
