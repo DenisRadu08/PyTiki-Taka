@@ -31,8 +31,19 @@ STATUS_OUT = "OUT"
 STATUS_CORNER = "CORNER"
 STATUS_GOAL_KICK = "GOAL_KICK"
 STATUS_OFFSIDE = "OFFSIDE"
+STATUS_SCENARIO_COUNTDOWN = "SCENARIO_COUNTDOWN"
+STATUS_SCENARIO_DONE = "SCENARIO_DONE"
 STATUS_START_GAME = "START_GAME"
 STATUS_MATCH_OVER = "MATCH_OVER"
+
+# TACTICAL SCENARIOS (MODUL DE TESTARE & FAZE)
+SCENARIO_COUNTDOWN_SECONDS = 3.0
+SCENARIO_1V1_GK = "1V1_GK"
+SCENARIO_OFFSIDE_VAR = "OFFSIDE_VAR"
+SCENARIO_CORNER = "CORNER"
+SCENARIO_TIKI_TAKA = "TIKI_TAKA"
+SCENARIO_GOAL_KICK = "GOAL_KICK"
+SCENARIO_THROW_IN = "THROW_IN"
 
 # STARTING POSITIONS
 STARTING_POSITIONS = {
@@ -96,9 +107,9 @@ RESTART_PREPARE_MAX_SECONDS = 4.8
 RESTART_PREPARE_SECONDS = 3.0  # mentinut pentru compatibilitate
 
 # GOALKEEPING & DEFLECTIONS
-GK_SAVE_RADIUS = 3.0                 # raza de plonjon / acoperire portar (marita usor pentru parade spectaculoase)
-GK_DIVE_SPEED = 1.25                 # viteza de deplasare la plonjon pentru a apara sutul spre colturi
-GK_CATCH_SPEED_THRESHOLD = 1.6       # suturi sub aceasta viteza sau pe centrul corpului sunt prinse direct
+GK_SAVE_RADIUS = 2.05                # raza de plonjon / acoperire portar (echilibrata ca suturile plasate la colt sa fie gol)
+GK_DIVE_SPEED = 0.88                 # viteza de deplasare la plonjon (umana, permite finalizari clinice la 1v1)
+GK_CATCH_SPEED_THRESHOLD = 1.35      # suturi sub aceasta viteza sau pe centrul corpului sunt prinse direct
 GK_PARRY_CORNER_CHANCE = 0.50        # 50% sanse ca suturile tari sa fie deviate peste linia de fund in CORNER
 GK_PARRY_REBOUND_CHANCE = 0.30       # 30% sanse ca suturile tari sa fie respinse in fata portii (rebound)
 GK_PARRY_HOLD_CHANCE = 0.20          # 20% sanse de prindere la sut tare

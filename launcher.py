@@ -23,14 +23,36 @@ def get_command(arg):
         return [sys.executable, "launcher.py", arg]
 
 def run_launcher():
-    def on_start_clicked():
-        print("Starting the game...")
+    def set_game_mode_and_launch(mode):
+        print(f"Starting the game in mode: {mode}...")
+        settings_data = {"match_rules": {"match_duration_real_seconds": 180.0, "game_mode": mode}}
+        try:
+            if os.path.exists("settings.json"):
+                with open("settings.json", "r") as f:
+                    loaded = json.load(f)
+                    if "match_rules" in loaded:
+                        settings_data["match_rules"].update(loaded["match_rules"])
+                        settings_data["match_rules"]["game_mode"] = mode
+        except Exception:
+            pass
+        try:
+            with open("settings.json", "w") as f:
+                json.dump(settings_data, f, indent=4)
+        except Exception:
+            pass
+
         root.withdraw() # Ascunde fereastra launcherului
 
         # Lansam exe-ul curent, dar ii spunem sa deschida visualizer-ul
         p = subprocess.Popen(get_command("--visualizer"))
         p.wait() # Asteapta ca jocul sa se deschida inainte de a continua
         root.destroy() # Opreste executia launcher.py
+
+    def on_start_clicked():
+        set_game_mode_and_launch("match")
+
+    def on_scenarios_clicked():
+        set_game_mode_and_launch("scenarios")
 
     # ==========================================
     # LOGICA FERESTREI DE SETARI
@@ -75,10 +97,18 @@ def run_launcher():
                 minutes = int(selected_text.split(" ")[0])
                 final_seconds = float(minutes * 60)
             
-            # Construim JSON-ul
+            # Construim JSON-ul pastrand game_mode daca exista
+            existing_mode = "match"
+            try:
+                if os.path.exists("settings.json"):
+                    with open("settings.json", "r") as rf:
+                        existing_mode = json.load(rf).get("match_rules", {}).get("game_mode", "match")
+            except Exception:
+                pass
             new_settings = {
                 "match_rules": {
-                    "match_duration_real_seconds": final_seconds
+                    "match_duration_real_seconds": final_seconds,
+                    "game_mode": existing_mode
                 }
             }
 
@@ -124,20 +154,33 @@ def run_launcher():
     bg_label = ctk.CTkLabel(root, image=bg_image, text="")
     bg_label.place(relx=0.5, rely=0.5, anchor="center")
     
-    # Butonul modern de START
+    # Butonul modern de START MATCH (90 MIN)
     start_button = ctk.CTkButton(
         root, 
         text="START MATCH", 
-        font=("Arial", 20, "bold"), 
+        font=("Arial", 18, "bold"), 
         fg_color="#CC0000", # Rosu aprins
         hover_color="#990000", # Rosu inchis la hover
-        width=200, 
+        width=210, 
         height=50,
         corner_radius=10, # Buton rotunjit
         command=on_start_clicked
     )
-    # Il plasam in partea de jos a ecranului
-    start_button.place(relx=0.5, rely=0.85, anchor="center")
+    start_button.place(relx=0.33, rely=0.85, anchor="center")
+
+    # Butonul modern pentru TACTICAL SCENARIOS (Faze & Testare)
+    scenarios_button = ctk.CTkButton(
+        root,
+        text="TACTICAL SCENARIOS",
+        font=("Arial", 18, "bold"),
+        fg_color="#0066CC", # Albastru electric
+        hover_color="#004C99", # Albastru inchis la hover
+        width=240,
+        height=50,
+        corner_radius=10,
+        command=on_scenarios_clicked
+    )
+    scenarios_button.place(relx=0.66, rely=0.85, anchor="center")
 
     # ====== Butonul de SETTINGS ======
     settings_button = ctk.CTkButton(

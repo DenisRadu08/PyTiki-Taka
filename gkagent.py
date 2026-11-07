@@ -127,6 +127,12 @@ class GoalkeeperAgent(PlayerAgent):
                     intention = self.player_in_position(target_x = self.start_x, target_y = self.start_y, position = "POS_STARTGAME")
                     if intention is not None:
                         self.dealer_socket.send_json(intention)
+
+                # ========================================================
+                # PREGATIREA SAU FINALUL FAZEI TACTICE (COUNTDOWN / DONE)
+                # ========================================================
+                elif message["game_status"] in [STATUS_SCENARIO_COUNTDOWN, STATUS_SCENARIO_DONE]:
+                    self.state = STATE_IDLE
                 
                 # ===================================
                 # MINGEA A IESIT IN OUT (OUT)
@@ -335,17 +341,17 @@ class GoalkeeperAgent(PlayerAgent):
                             # proiectam pozitia Y ideala unde va ateriza mingea
                             predicted_y = ball_y + (velocity_y * time_to_reach)
 
-                            # introducerea erorii umane fine (balansarea AI)
+                            # introducerea erorii umane de reactie (mai mare la suturile din apropiere / 1v1)
                             shot_speed = math.hypot(velocity_x, velocity_y)
-                            error_coefficient = 0.18
+                            error_coefficient = 1.05 if distance_x < 16.5 else 0.65
                             error_margin = shot_speed * error_coefficient
                             predicted_y += random.uniform(-error_margin, error_margin)
 
                             # incadram plonjonul in limitele portii
                             target_y = max(39.0, min(61.0, predicted_y))
                             
-                            # portarul se aseaza la adancime de 4 metri pentru un unghi optim de parada
-                            target_x = goal_center_x + (4.0 if goal_center_x == 0.0 else -4.0)
+                            # portarul plonjeaza pe linia de 2.6 metri in fata portii
+                            target_x = goal_center_x + (2.6 if goal_center_x == 0.0 else -2.6)
                         
                         else:
                             # vectorul de la poarta catre minge
@@ -354,13 +360,13 @@ class GoalkeeperAgent(PlayerAgent):
 
                             distance_goal_to_ball = math.hypot(dx, dy)
 
-                            # daca distanta e mai mare decat raza noastra de 6 metri,
-                            # portarul trebuie sa stea pe arc
-                            if distance_goal_to_ball > 6.0:
-                                target_x = goal_center_x + (dx / distance_goal_to_ball) * 6.0
-                                target_y = goal_center_y + (dy / distance_goal_to_ball) * 6.0
+                            # portarul sta pe un arc realist de 3.2 metri in fata portii (nu la 6m unde blocheaza tot unghiul)
+                            gk_arc_radius = 3.2
+                            if distance_goal_to_ball > gk_arc_radius:
+                                target_x = goal_center_x + (dx / distance_goal_to_ball) * gk_arc_radius
+                                target_y = max(43.0, min(57.0, goal_center_y + (dy / distance_goal_to_ball) * gk_arc_radius))
                             else:
-                                # mingea e foarte aproape
+                                # mingea e foarte aproape in careul mic
                                 target_x = message["ball"]["x"]
                                 target_y = message["ball"]["y"]
                         

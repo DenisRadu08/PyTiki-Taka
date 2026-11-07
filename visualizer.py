@@ -5,7 +5,11 @@ import json
 import subprocess
 import sys
 import time
-from config import STATUS_GOAL, STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_OFFSIDE, STATUS_MATCH_OVER, STATUS_PLAYING, STATUS_START_GAME, STATE_KICK
+from config import (
+    STATUS_GOAL, STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_OFFSIDE,
+    STATUS_SCENARIO_COUNTDOWN, STATUS_SCENARIO_DONE, STATUS_MATCH_OVER, STATUS_PLAYING, STATUS_START_GAME, STATE_KICK,
+    SCENARIO_1V1_GK, SCENARIO_OFFSIDE_VAR, SCENARIO_CORNER, SCENARIO_TIKI_TAKA, SCENARIO_GOAL_KICK, SCENARIO_THROW_IN
+)
 import math
 import random
 
@@ -88,6 +92,29 @@ class GameVisualizer:
         self.sub_socket = self.context.socket(zmq.SUB)
         self.sub_socket.setsockopt_string(zmq.SUBSCRIBE,"")
         self.sub_socket.connect("tcp://localhost:5555")
+
+        # Socket DEALER pentru trimiterea instantanee a comenzilor de faze (Tactical Scenarios) catre Engine
+        self.cmd_socket = self.context.socket(zmq.DEALER)
+        self.cmd_socket.setsockopt_string(zmq.IDENTITY, "VISUALIZER_CMD")
+        self.cmd_socket.connect("tcp://localhost:5556")
+
+        self.game_mode = "match"
+        try:
+            with open("settings.json", "r") as f:
+                self.game_mode = json.load(f).get("match_rules", {}).get("game_mode", "match")
+        except Exception:
+            pass
+
+        self.active_scenario = None
+        self.scenario_buttons = []
+        self.SCENARIO_LABELS = {
+            SCENARIO_1V1_GK: "1v1 GK",
+            SCENARIO_OFFSIDE_VAR: "OFFSIDE (VAR)",
+            SCENARIO_CORNER: "CORNER",
+            SCENARIO_TIKI_TAKA: "COUNTER-ATTACK",
+            SCENARIO_GOAL_KICK: "GOAL KICK",
+            SCENARIO_THROW_IN: "THROW-IN"
+        }
 
         self.simulation_started = True
         # Lansam motorul imediat ce visualizer-ul se deshide
@@ -293,12 +320,30 @@ class GameVisualizer:
                 if event.type == pygame.MOUSEBUTTONDOWN:
                     mouse_pos = event.pos
 
+                    # Click pe unul dintre butoanele de faze (Tactical Scenarios)
+                    if self.game_mode == "scenarios":
+                        clicked_scenario = False
+                        for sc_rect, sc_id in self.scenario_buttons:
+                            if sc_rect.collidepoint(mouse_pos):
+                                print(f"Selectat scenariul tactic: {sc_id}")
+                                self.active_scenario = sc_id
+                                self.cmd_socket.send_json({"command": "LOAD_SCENARIO", "scenario": sc_id})
+                                clicked_scenario = True
+                                break
+                        if clicked_scenario:
+                            continue
+
                     # Cazul B: In timpul simularii (Butoanele mici)
                     if hasattr(self, 'btn_restart') and self.btn_restart.collidepoint(mouse_pos):
-                        print("Restartam meciul...")
-                        self.stop_engine()
-                        time.sleep(0.5) # Asteptam 500ms ca Windows-ul sa elibereze porturile ZMQ
-                        self.engine_process = subprocess.Popen(get_command("--engine"))
+                        if self.game_mode == "scenarios":
+                            if self.active_scenario is not None:
+                                print(f"Reluam faza curenta: {self.active_scenario}...")
+                                self.cmd_socket.send_json({"command": "LOAD_SCENARIO", "scenario": self.active_scenario})
+                        else:
+                            print("Restartam meciul...")
+                            self.stop_engine()
+                            time.sleep(0.5) # Asteptam 500ms ca Windows-ul sa elibereze porturile ZMQ
+                            self.engine_process = subprocess.Popen(get_command("--engine"))
                             
                     elif hasattr(self, 'btn_quit') and self.btn_quit.collidepoint(mouse_pos):
                         print("Oprim jocul de tot...")
@@ -322,6 +367,18 @@ class GameVisualizer:
                     pygame.display.flip()
                     continue
                 message = self.last_message
+
+            # Drenam eventualele raspunsuri de confirmare de pe cmd_socket
+            try:
+                while True:
+                    self.cmd_socket.recv(flags=zmq.NOBLOCK)
+            except zmq.Again:
+                pass
+
+            if "game_mode" in message:
+                self.game_mode = message["game_mode"]
+            if "active_scenario" in message:
+                self.active_scenario = message["active_scenario"]
             
 
             # =======================================================
@@ -331,8 +388,10 @@ class GameVisualizer:
             if not hasattr(self, 'last_status'):
                 self.last_status = current_status
 
-            # Daca jocul abia incepe SAU se reia dupa un gol -> Kickoff Whistle!
-            if current_status == STATUS_PLAYING and self.last_status in [STATUS_START_GAME, STATUS_GOAL]:
+            # Daca jocul abia incepe SAU se reia dupa un gol SAU se termina numaratoarea 3,2,1 -> Whistle!
+            if (current_status == STATUS_PLAYING and self.last_status in [STATUS_START_GAME, STATUS_GOAL]) or (
+                self.last_status == STATUS_SCENARIO_COUNTDOWN and current_status != STATUS_SCENARIO_COUNTDOWN
+            ):
                 if self.sound_whistle:
                     self.sound_whistle.play()
                 if self.sound_goal:
@@ -349,8 +408,10 @@ class GameVisualizer:
                 if self.sound_goal:
                     self.sound_goal.play()
 
-            # Fluierul arbitrului la OFSAID
-            if current_status == STATUS_OFFSIDE and self.last_status != STATUS_OFFSIDE:
+            # Fluierul arbitrului la OFSAID sau la finalizarea unei faze tactice active
+            if (current_status == STATUS_OFFSIDE and self.last_status != STATUS_OFFSIDE) or (
+                current_status == STATUS_SCENARIO_DONE and self.last_status != STATUS_SCENARIO_DONE and self.active_scenario is not None
+            ):
                 if self.sound_whistle:
                     self.sound_whistle.play()
             
@@ -415,6 +476,22 @@ class GameVisualizer:
                     spot_py = int(self.stadium_padding_y + (float(off_spot_y) * (self.play_height / 100.0)))
                     pulse_r = int((11 + 3 * math.sin(time.time() * 8.0)) * self.scale)
                     pygame.draw.circle(self.screen, (255, 80, 80), (spot_px, spot_py), pulse_r, max(2, int(2 * self.scale)))
+
+            # 4.6. PREVIEW TACTIC PE GAZON IN TIMPUL NUMARATORII 3, 2, 1 (STATUS_SCENARIO_COUNTDOWN)
+            elif message.get("game_status") == STATUS_SCENARIO_COUNTDOWN:
+                pulse_ball_r = int((14 + 4 * math.sin(time.time() * 7.0)) * self.scale)
+                pygame.draw.circle(self.screen, (255, 215, 0), (int(ball_x), int(ball_y)), pulse_ball_r, max(2, int(2 * self.scale)))
+                if self.active_scenario == SCENARIO_OFFSIDE_VAR and message.get("offside_line_x") is not None:
+                    screen_line_x = int(self.stadium_padding_x + (float(message["offside_line_x"]) * (self.play_width / 100.0)))
+                    top_y = self.stadium_padding_y
+                    bot_y = self.stadium_padding_y + self.play_height
+                    dash_len = max(8, int(12 * self.scale))
+                    gap_len = max(5, int(7 * self.scale))
+                    curr_y = top_y
+                    while curr_y < bot_y:
+                        end_y = min(bot_y, curr_y + dash_len)
+                        pygame.draw.line(self.screen, (0, 230, 255), (screen_line_x, curr_y), (screen_line_x, end_y), max(1, int(2 * self.scale)))
+                        curr_y += dash_len + gap_len
 
             # 5. Parcurgem jucatorii (Desenam intai jucatorii ca mingea sa fie deasupra lor)
             for player_id, player_data in message["players"].items():
@@ -499,6 +576,28 @@ class GameVisualizer:
 
 
             # =======================================================
+            # EFECT DE NOAPTE (SPOTLIGHT PE GAZON) - APLICAT INAINTE DE TEXTELE HUD
+            # =======================================================
+            # Cream o umbra peste tribune (opacitate 110 din 255), iar textele HUD se vor desena deasupra ei, clar luminate!
+            darkness = pygame.Surface((self.screen.get_width(), self.screen.get_height()), pygame.SRCALPHA)
+            darkness.fill((0, 0, 0, 110)) 
+
+            # Decupam o "gaura de lumina" perfect deasupra gazonului (Alpha 0)
+            light_rect = pygame.Rect(
+                self.stadium_padding_x - (self.margin_x * 2), # <--- Dublat (acopera poarta stanga)
+                self.stadium_padding_y - self.margin_y, 
+                self.play_width + (4 * self.margin_x),        # <--- 4x pentru a dubla pe ambele parti (acopera poarta dreapta)
+                self.play_height + (2 * self.margin_y)
+            )
+            darkness.fill((255, 255, 255, 0), light_rect, special_flags=pygame.BLEND_RGBA_MIN)
+            
+            # Adaugam intunericul peste tribune (gazonul si textele HUD de mai jos raman perfect luminate!)
+            self.screen.blit(darkness, (0, 0))
+
+            # Coordonata Y pentru bannerele de sus (mai sus de marginea gazonului, ca sa nu intersecteze linia terenului)
+            top_banner_y = max(int(24 * self.scale), self.stadium_padding_y - int(22 * self.scale))
+
+            # =======================================================
             # 8. CELEBRAREA GOLULUI
             # =======================================================
             if message.get("game_status") == STATUS_GOAL:
@@ -519,36 +618,30 @@ class GameVisualizer:
             # ========================================================
 
             # =======================================================
-            # 9. ANUNTUL DE OUT
+            # 9. ANUNTUL DE OUT / CORNER / AUT DE POARTA / OFSAID / SCENARIU
             # =======================================================
             elif message.get("game_status") == STATUS_OUT:
-                text_out = self.font.render("OUT DE MARGINE", True, self.BLACK)
-                text_shadow = self.font.render("OUT DE MARGINE", True, self.WHITE)
-                
-                # Pozitionam textul sus, pe centru (chiar deasupra liniei de margine de sus)
-                out_pos = (self.screen.get_width() // 2, self.stadium_padding_y - int(10 * self.scale))
-                
-                # Desenam umbra (un decalaj mai fin decat la gol)
+                text_out = self.font.render("OUT DE MARGINE", True, self.WHITE)
+                text_shadow = self.font.render("OUT DE MARGINE", True, self.BLACK)
+                out_pos = (self.screen.get_width() // 2, top_banner_y)
                 shadow_rect = text_shadow.get_rect(center=(out_pos[0] + 3, out_pos[1] + 3))
                 self.screen.blit(text_shadow, shadow_rect)
-                
-                # Desenam textul alb
                 out_rect = text_out.get_rect(center=out_pos)
                 self.screen.blit(text_out, out_rect)
 
             elif message.get("game_status") == STATUS_CORNER:
-                text_corner = self.font.render("CORNER", True, self.BLACK)
-                text_shadow = self.font.render("CORNER", True, self.WHITE)
-                corner_pos = (self.screen.get_width() // 2, self.stadium_padding_y - int(10 * self.scale))
+                text_corner = self.font.render("CORNER", True, self.WHITE)
+                text_shadow = self.font.render("CORNER", True, self.BLACK)
+                corner_pos = (self.screen.get_width() // 2, top_banner_y)
                 shadow_rect = text_shadow.get_rect(center=(corner_pos[0] + 3, corner_pos[1] + 3))
                 self.screen.blit(text_shadow, shadow_rect)
                 corner_rect = text_corner.get_rect(center=corner_pos)
                 self.screen.blit(text_corner, corner_rect)
 
             elif message.get("game_status") == STATUS_GOAL_KICK:
-                text_gk = self.font.render("AUT DE POARTA", True, self.BLACK)
-                text_shadow = self.font.render("AUT DE POARTA", True, self.WHITE)
-                gk_pos = (self.screen.get_width() // 2, self.stadium_padding_y - int(10 * self.scale))
+                text_gk = self.font.render("AUT DE POARTA", True, self.WHITE)
+                text_shadow = self.font.render("AUT DE POARTA", True, self.BLACK)
+                gk_pos = (self.screen.get_width() // 2, top_banner_y)
                 shadow_rect = text_shadow.get_rect(center=(gk_pos[0] + 3, gk_pos[1] + 3))
                 self.screen.blit(text_shadow, shadow_rect)
                 gk_rect = text_gk.get_rect(center=gk_pos)
@@ -557,11 +650,54 @@ class GameVisualizer:
             elif message.get("game_status") == STATUS_OFFSIDE:
                 text_off = self.font.render("OFSAID! (VAR)", True, (255, 230, 0))
                 text_shadow = self.font.render("OFSAID! (VAR)", True, self.BLACK)
-                off_pos = (self.screen.get_width() // 2, self.stadium_padding_y - int(10 * self.scale))
+                off_pos = (self.screen.get_width() // 2, top_banner_y)
                 shadow_rect = text_shadow.get_rect(center=(off_pos[0] + 3, off_pos[1] + 3))
                 self.screen.blit(text_shadow, shadow_rect)
                 off_rect = text_off.get_rect(center=off_pos)
                 self.screen.blit(text_off, off_rect)
+
+            elif message.get("game_status") == STATUS_SCENARIO_COUNTDOWN:
+                sc_label = self.SCENARIO_LABELS.get(self.active_scenario, self.active_scenario)
+                cd_num = str(message.get("scenario_countdown_left", 3))
+
+                # Titlul fazei sus pe centru
+                title_str = f"SCENARIO: {sc_label}"
+                text_title = self.font.render(title_str, True, (255, 215, 0))
+                text_title_sh = self.font.render(title_str, True, self.BLACK)
+                title_pos = (self.screen.get_width() // 2, top_banner_y)
+                self.screen.blit(text_title_sh, text_title_sh.get_rect(center=(title_pos[0] + 3, title_pos[1] + 3)))
+                self.screen.blit(text_title, text_title.get_rect(center=title_pos))
+
+                # Numaratoarea inversa 3, 2, 1 pe centrul terenului
+                center_pos = (self.screen.get_width() // 2, self.screen.get_height() // 2)
+                cd_shadow = self.huge_font.render(cd_num, True, self.BLACK)
+                cd_surf = self.huge_font.render(cd_num, True, (255, 230, 0))
+                self.screen.blit(cd_shadow, cd_shadow.get_rect(center=(center_pos[0] + 5, center_pos[1] + 5)))
+                self.screen.blit(cd_surf, cd_surf.get_rect(center=center_pos))
+
+            elif message.get("game_status") == STATUS_SCENARIO_DONE:
+                if not self.active_scenario:
+                    # Inca nu a fost selectata nicio faza: afisam "ALEGE FAZA" mare pe mijlocul terenului!
+                    center_pos = (self.screen.get_width() // 2, self.screen.get_height() // 2)
+                    choose_sh = self.huge_font.render("ALEGE FAZA", True, self.BLACK)
+                    choose_txt = self.huge_font.render("ALEGE FAZA", True, (255, 215, 0))
+                    self.screen.blit(choose_sh, choose_sh.get_rect(center=(center_pos[0] + 5, center_pos[1] + 5)))
+                    self.screen.blit(choose_txt, choose_txt.get_rect(center=center_pos))
+
+                    sub_str = "SELECTEAZA O FAZA TACTICA DIN BARA DE JOS"
+                    text_sub = self.font.render(sub_str, True, (0, 230, 255))
+                    text_sub_sh = self.font.render(sub_str, True, self.BLACK)
+                    sub_pos = (self.screen.get_width() // 2, top_banner_y)
+                    self.screen.blit(text_sub_sh, text_sub_sh.get_rect(center=(sub_pos[0] + 3, sub_pos[1] + 3)))
+                    self.screen.blit(text_sub, text_sub.get_rect(center=sub_pos))
+                else:
+                    sc_label = self.SCENARIO_LABELS.get(self.active_scenario, self.active_scenario)
+                    done_str = f"FAZA INCHEIATA ({sc_label}) - ALEGE ALTA FAZA SAU RESTART"
+                    text_done = self.font.render(done_str, True, (0, 230, 255))
+                    text_done_sh = self.font.render(done_str, True, self.BLACK)
+                    done_pos = (self.screen.get_width() // 2, top_banner_y)
+                    self.screen.blit(text_done_sh, text_done_sh.get_rect(center=(done_pos[0] + 3, done_pos[1] + 3)))
+                    self.screen.blit(text_done, text_done.get_rect(center=done_pos))
 
             # ======================================================
 
@@ -585,28 +721,6 @@ class GameVisualizer:
                 text_score = self.font.render(f"RED {score_a} - {score_b} BLUE", True, (255, 215, 0))
                 score_rect = text_score.get_rect(center=(self.screen.get_width() // 2, self.screen.get_height() // 2 + int(30 * self.scale)))
                 self.screen.blit(text_score, score_rect)
-
-
-            # =======================================================
-            
-            # =======================================================
-            # EFECT DE NOAPTE (SPOTLIGHT PE GAZON)
-            # =======================================================
-            # Cream o umbra peste tot ecranul (opacitate 170 din 255)
-            darkness = pygame.Surface((self.screen.get_width(), self.screen.get_height()), pygame.SRCALPHA)
-            darkness.fill((0, 0, 0, 110)) 
-
-            # Decupam o "gaura de lumina" perfect deasupra gazonului (Alpha 0)
-            light_rect = pygame.Rect(
-                self.stadium_padding_x - (self.margin_x * 2), # <--- Dublat (acopera poarta stanga)
-                self.stadium_padding_y - self.margin_y, 
-                self.play_width + (4 * self.margin_x),        # <--- 4x pentru a dubla pe ambele parti (acopera poarta dreapta)
-                self.play_height + (2 * self.margin_y)
-            )
-            darkness.fill((255, 255, 255, 0), light_rect, special_flags=pygame.BLEND_RGBA_MIN)
-            
-            # Adaugam intunericul peste tribune si jucatori (gazonul ramane luminat prin gaura)
-            self.screen.blit(darkness, (0, 0))
 
             # =======================================================
             # DESENAREA BUTOANELOR IN TIMPUL MECIULUI (Ghost HUD)
@@ -655,6 +769,49 @@ class GameVisualizer:
                 self.screen.blit(btn_surf, rect.topleft)
 
             # =======================================================
+            # BARA DE FAZE TACTICE (TACTICAL SCENARIOS GHOST HUD)
+            # =======================================================
+            self.scenario_buttons = []
+            if self.game_mode == "scenarios":
+                sc_list = [
+                    (SCENARIO_1V1_GK, "1v1 GK"),
+                    (SCENARIO_OFFSIDE_VAR, "OFFSIDE (VAR)"),
+                    (SCENARIO_CORNER, "CORNER"),
+                    (SCENARIO_TIKI_TAKA, "COUNTER-ATTACK"),
+                    (SCENARIO_GOAL_KICK, "GOAL KICK"),
+                    (SCENARIO_THROW_IN, "THROW-IN")
+                ]
+                sc_btn_w = int(126 * self.scale)
+                sc_btn_h = int(28 * self.scale)
+                sc_gap = int(10 * self.scale)
+                total_bar_w = len(sc_list) * sc_btn_w + (len(sc_list) - 1) * sc_gap
+                bar_start_x = (screen_w - total_bar_w) // 2
+                bar_y = self.screen.get_height() - int(46 * self.scale)
+
+                for idx, (sc_id, sc_label) in enumerate(sc_list):
+                    bx = bar_start_x + idx * (sc_btn_w + sc_gap)
+                    sc_rect = pygame.Rect(bx, bar_y, sc_btn_w, sc_btn_h)
+                    self.scenario_buttons.append((sc_rect, sc_id))
+
+                    is_hover = sc_rect.collidepoint(mouse_pos)
+                    is_active = (self.active_scenario == sc_id)
+                    is_done_phase = (message.get("game_status") == STATUS_SCENARIO_DONE)
+                    alpha_sc = 255 if (is_hover or is_active or is_done_phase) else 95
+
+                    bg_col = (0, 110, 215) if is_active else (35, 45, 60)
+                    border_col = (255, 215, 0) if is_active else self.WHITE
+
+                    sc_surf = pygame.Surface((sc_rect.width, sc_rect.height), pygame.SRCALPHA)
+                    pygame.draw.rect(sc_surf, (*bg_col, alpha_sc), sc_surf.get_rect(), border_radius=7)
+                    pygame.draw.rect(sc_surf, (*border_col, alpha_sc), sc_surf.get_rect(), 2, border_radius=7)
+
+                    lbl_col = (255, 235, 120) if is_active else self.WHITE
+                    lbl_surf = self.small_font.render(sc_label, True, lbl_col)
+                    lbl_surf.set_alpha(alpha_sc)
+                    sc_surf.blit(lbl_surf, lbl_surf.get_rect(center=sc_surf.get_rect().center))
+                    self.screen.blit(sc_surf, sc_rect.topleft)
+
+            # =======================================================
             # TABELA DE SCOR SI TIMP (HUD)
             # =======================================================
             # 1. Extragem datele (cu fallback la 0 in caz ca motorul de abia a pornit)
@@ -662,10 +819,13 @@ class GameVisualizer:
             score_b = message.get("score_B", 0)
             v_time = message.get("time", 0.0)
 
-            # 2. Convertim timpul din float in MM:SS
-            mins = int(v_time)
-            secs = int((v_time - mins) * 60)
-            time_str = f"{mins:02d}:{secs:02d}"
+            # 2. Convertim timpul din float in MM:SS (sau afisam "LAB" in modul Tactical Scenarios)
+            if self.game_mode == "scenarios":
+                time_str = "LAB"
+            else:
+                mins = int(v_time)
+                secs = int((v_time - mins) * 60)
+                time_str = f"{mins:02d}:{secs:02d}"
 
             # 3. Definim latimile pentru fiecare segment din bara
             box_h = int(35 * self.scale)
