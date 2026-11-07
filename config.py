@@ -11,6 +11,8 @@ STATE_DO_CORNER = "DO_CORNER"
 STATE_WAIT_CORNER = "WAIT_CORNER"
 STATE_DO_GOAL_KICK = "DO_GOAL_KICK"
 STATE_WAIT_GOAL_KICK = "WAIT_GOAL_KICK"
+STATE_DO_FREE_KICK = "DO_FREE_KICK"
+STATE_WAIT_FREE_KICK = "WAIT_FREE_KICK"
 STATE_DRIBBLE = "DRIBBLE"
 STATE_DRIBBLE_DUEL = "DRIBBLE_DUEL"
 STATE_PASS = "PASS"
@@ -28,6 +30,7 @@ STATUS_GOAL = "GOAL"
 STATUS_OUT = "OUT"
 STATUS_CORNER = "CORNER"
 STATUS_GOAL_KICK = "GOAL_KICK"
+STATUS_OFFSIDE = "OFFSIDE"
 STATUS_START_GAME = "START_GAME"
 STATUS_MATCH_OVER = "MATCH_OVER"
 
@@ -86,6 +89,7 @@ WAIT_POSITIONING_SPEED = 0.70
 TAKER_POSITIONING_SPEED = 0.70
 # fluier dinamic arbitrul: timp minim de asezare si timp maxim de siguranta (secunde)
 OUT_OF_PLAY_ROLL_SECONDS = 1.6       # cate secunde vedem mingea cum iese din teren (slow-motion) inainte sa fie pusa pe punct
+OFFSIDE_HOLD_SECONDS = 2.0           # cate secunde ramane afisata linia VAR de ofsaid inainte de asezarea mingii pentru lovitura libera indirecta
 GOAL_CELEBRATION_SECONDS = 3.5       # cate secunde ramane mingea in plasa portii dupa gol inainte de centrare
 RESTART_PREPARE_MIN_SECONDS = 3.2
 RESTART_PREPARE_MAX_SECONDS = 4.8

@@ -55,6 +55,13 @@ class MatchEngine:
         self.restart_ball_y = 50.0
         self.goal_time = None
         self.goal_ball_centered = True
+        # Sistemul Arbitru FIFA + VAR pentru Ofsaid
+        self.offside_pending = False
+        self.offside_receiver_id = None
+        self.offside_line_x = None
+        self.offside_spot_x = 50.0
+        self.offside_spot_y = 50.0
+        self.offside_defending_team = None
 
         # Citim settings.json (bridge-ul catre Launcher)
         try:
@@ -112,10 +119,10 @@ class MatchEngine:
                         }
 
                     if str(intention["action"]) in [STATE_KICK, STATE_DRIBBLE, STATE_PASS, STATE_CONTROL_BALL, STATE_GK_CLEAR_BALL]: 
-                        if self.game_status in [STATUS_PLAYING, STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK]: 
+                        if self.game_status in [STATUS_PLAYING, STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_OFFSIDE]: 
 
                             # Nu permitem executia sutului daca arbitrul inca tine faza blocata pentru asezarea echipelor
-                            if self.game_status in [STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK] and (not self.restart_ready or not self.restart_ball_placed):
+                            if self.game_status in [STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_OFFSIDE] and (not self.restart_ready or not self.restart_ball_placed):
                                 pass
                             else:
                                 # extragem pozitia reala a jucatorului din mintea Serverului
@@ -134,11 +141,36 @@ class MatchEngine:
                                     self.possession = agent_id_str
                                     self.kicking_team = self.players[agent_id_str]["team"]
                                     self.kick_action = str(intention["action"])
+                                    self.offside_pending = False
 
                                     if "target_agent_id" in intention and intention["target_agent_id"] is not None:
                                         self.intended_receiver = str(intention["target_agent_id"])
                                     elif str(intention["action"]) in [STATE_KICK, STATE_DRIBBLE, STATE_GK_CLEAR_BALL, STATE_CONTROL_BALL]:
                                         self.intended_receiver = None
+
+                                    # VERIFICARE ARBITRU FIFA OFSAID IN MOMENTUL PASEI (doar in joc deschis STATUS_PLAYING)
+                                    if self.game_status == STATUS_PLAYING and self.kick_action == STATE_PASS and self.intended_receiver in self.players:
+                                        rec_data = self.players[self.intended_receiver]
+                                        if rec_data.get("team") == self.kicking_team and self.intended_receiver != agent_id_str:
+                                            def_team = "B" if self.kicking_team == "A" else "A"
+                                            def_line_x = self.get_second_last_defender_x(def_team)
+                                            rec_x = rec_data["x"]
+                                            rec_y = rec_data["y"]
+                                            is_offside_now = False
+                                            if self.kicking_team == "A":
+                                                if rec_x > 50.0 and rec_x > (self.ball["x"] + 0.4) and rec_x > (def_line_x + 0.55):
+                                                    is_offside_now = True
+                                            else:
+                                                if rec_x < 50.0 and rec_x < (self.ball["x"] - 0.4) and rec_x < (def_line_x - 0.55):
+                                                    is_offside_now = True
+
+                                            if is_offside_now:
+                                                self.offside_pending = True
+                                                self.offside_receiver_id = self.intended_receiver
+                                                self.offside_line_x = def_line_x
+                                                self.offside_spot_x = max(6.0, min(94.0, rec_x))
+                                                self.offside_spot_y = max(6.0, min(94.0, rec_y))
+                                                self.offside_defending_team = def_team
                                 else:
                                     # printam tentativa de "frauda" pentru debug
                                     print(f"Motorul a respins sutul agentului {agent_id_str}. Era la {distance_to_ball:.2f} distanta de minge!")
@@ -180,14 +212,14 @@ class MatchEngine:
                 elif player_data["state"] == STATE_RESET:
                     self.move_player_towards(player_data, player_data["start_x"], player_data["start_y"], speed = 0.6)
                 
-                # daca suntem in DO_THROW_IN, DO_CORNER sau DO_GOAL_KICK, merge rapid spre a bate faza fixa (0.70 speed)
-                elif player_data["state"] in [STATE_DO_THROW_IN, STATE_DO_CORNER, STATE_DO_GOAL_KICK]:
+                # daca suntem in DO_THROW_IN, DO_CORNER, DO_GOAL_KICK sau DO_FREE_KICK, merge rapid spre a bate faza fixa (0.70 speed)
+                elif player_data["state"] in [STATE_DO_THROW_IN, STATE_DO_CORNER, STATE_DO_GOAL_KICK, STATE_DO_FREE_KICK]:
                     tx_take = self.restart_ball_x if not self.restart_ball_placed else self.ball["x"]
                     ty_take = self.restart_ball_y if not self.restart_ball_placed else self.ball["y"]
                     self.move_player_towards(player_data, tx_take, ty_take, speed = TAKER_POSITIONING_SPEED)
 
-                # daca suntem in WAIT_THROW_IN, WAIT_CORNER sau WAIT_GOAL_KICK, ne asezam sprintat spre tinta primita de la agent
-                elif player_data["state"] in [STATE_WAIT_THROW_IN, STATE_WAIT_CORNER, STATE_WAIT_GOAL_KICK]:
+                # daca suntem in WAIT_THROW_IN, WAIT_CORNER, WAIT_GOAL_KICK sau WAIT_FREE_KICK, ne asezam sprintat spre tinta primita de la agent
+                elif player_data["state"] in [STATE_WAIT_THROW_IN, STATE_WAIT_CORNER, STATE_WAIT_GOAL_KICK, STATE_WAIT_FREE_KICK]:
                     if "target_x" in player_data and "target_y" in player_data:
                         self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = WAIT_POSITIONING_SPEED)
 
@@ -231,12 +263,13 @@ class MatchEngine:
                     if self.start_time is None:
                         self.start_time = time.time()
 
-            if self.game_status in [STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK]:
-                # 0. Rulare vizuala slow-motion a mingii in afara terenului inainte de asezarea pe punct
+            if self.game_status in [STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_OFFSIDE]:
+                # 0. Rulare vizuala slow-motion a mingii (sau afisare linia VAR la OFSAID) inainte de asezarea pe punct
                 if not self.restart_ball_placed:
-                    if self.restart_start_time is not None and (time.time() - self.restart_start_time) < OUT_OF_PLAY_ROLL_SECONDS:
-                        self.ball["velocity_x"] *= 0.88
-                        self.ball["velocity_y"] *= 0.88
+                    hold_duration = OFFSIDE_HOLD_SECONDS if self.game_status == STATUS_OFFSIDE else OUT_OF_PLAY_ROLL_SECONDS
+                    if self.restart_start_time is not None and (time.time() - self.restart_start_time) < hold_duration:
+                        self.ball["velocity_x"] *= 0.85
+                        self.ball["velocity_y"] *= 0.85
                         self.ball["x"] = max(-3.5, min(103.5, self.ball["x"]))
                         self.ball["y"] = max(-2.8, min(102.8, self.ball["y"]))
                     else:
@@ -245,8 +278,8 @@ class MatchEngine:
                         self.ball["x"] = self.restart_ball_x
                         self.ball["y"] = self.restart_ball_y
                         self.restart_ball_placed = True
-                # fluier dinamic pentru asezarea echipelor inainte de executie
-                if not self.restart_ready:
+                # fluier dinamic pentru asezarea echipelor inainte de executie (doar dupa ce mingea a fost asezata pe punct)
+                if self.restart_ball_placed and not self.restart_ready:
                     if self.restart_start_time is not None:
                         elapsed = time.time() - self.restart_start_time
                         # 1. Timp minim de asezare tactica
@@ -254,7 +287,7 @@ class MatchEngine:
                             # 2. Verificam daca executantul a ajuns la minge
                             taker_at_ball = False
                             for p_id, p in self.players.items():
-                                if p["state"] in [STATE_DO_THROW_IN, STATE_DO_CORNER, STATE_DO_GOAL_KICK]:
+                                if p["state"] in [STATE_DO_THROW_IN, STATE_DO_CORNER, STATE_DO_GOAL_KICK, STATE_DO_FREE_KICK]:
                                     if self.calculate_distance(p["x"], p["y"], self.ball["x"], self.ball["y"]) < 2.5:
                                         taker_at_ball = True
                                         break
@@ -268,6 +301,7 @@ class MatchEngine:
                 if self.restart_ball_placed and self.restart_ready and (self.ball["velocity_x"] != 0.0 or self.ball["velocity_y"] != 0.0):
                     self.game_status = STATUS_PLAYING
                     self.restart_ready = True
+                    self.offside_pending = False
 
             # ===========================================
             # --------- SISTEMUL ANTI-COLLIDE -----------
@@ -456,6 +490,28 @@ class MatchEngine:
             ball_current_speed = math.hypot(self.ball['velocity_x'], self.ball['velocity_y'])
             if self.intended_receiver is not None and ball_current_speed < 0.3:
                 self.intended_receiver = None
+                self.offside_pending = False
+
+            # ==================================================
+            # VERIFICARE ACTIVARE OFSAID (ARBITRU + VAR)
+            # ==================================================
+            if self.game_status == STATUS_PLAYING and self.offside_pending and self.offside_receiver_id in self.players:
+                off_rec = self.players[self.offside_receiver_id]
+                dist_off_rec = self.calculate_distance(off_rec["x"], off_rec["y"], self.ball["x"], self.ball["y"])
+                if dist_off_rec < 3.2:
+                    print(f"OFSAID! Jucatorul {self.offside_receiver_id} a fost surprins in afara jocului (Linia VAR: {self.offside_line_x:.1f}m)!")
+                    self.game_status = STATUS_OFFSIDE
+                    self.offside_pending = False
+                    self.possession = None
+                    self.intended_receiver = None
+                    self.last_touch = self.offside_receiver_id
+                    self.restart_ready = False
+                    self.restart_ball_placed = False
+                    self.restart_start_time = time.time()
+                    self.restart_ball_x = self.offside_spot_x
+                    self.restart_ball_y = self.offside_spot_y
+                    self.ball["velocity_x"] *= 0.22
+                    self.ball["velocity_y"] *= 0.22
 
             # verificam daca mingea e libera sau in posesia cuiva
             if self.possession is not None:
@@ -508,6 +564,7 @@ class MatchEngine:
                         # INTERVENTIE PORTAR (SPECIALIZATA PENTRU REALISM FOTBAL)
                         # ========================================================
                         if is_gk:
+                            self.offside_pending = False
                             # 1. Prindere sigura daca mingea e usoara/medie SAU vine fix in corpul portarului
                             if ball_speed < GK_CATCH_SPEED_THRESHOLD or distance_to_ball < 1.3:
                                 self.ball["velocity_x"] = 0.0
@@ -593,6 +650,7 @@ class MatchEngine:
 
                             # 2. Interventie adversar:
                             else:
+                                self.offside_pending = False
                                 # A. Blocaj defensiv la SUT puternic pe poarta (STATE_KICK, viteza >= 2.2) => Ricoseu / Deviere
                                 if self.kick_action == STATE_KICK and ball_speed >= 2.2:
                                     self.ball["velocity_x"] *= random.uniform(-0.5, 0.3)
@@ -627,6 +685,7 @@ class MatchEngine:
 
                 # GOL pentru echipa B sau IESIRE LINIE DE FUND (STÂNGA: x <= 0)
                 if self.ball['x'] <= 0:
+                    self.offside_pending = False
                     if self.ball['y'] >= 41.0 and self.ball['y'] <= 59.0:
                         print("GOAL!!! GOAL!!! GOAL!!!")
                         self.game_status = STATUS_GOAL
@@ -665,6 +724,7 @@ class MatchEngine:
 
                 # GOL pentru echipa A sau IESIRE LINIE DE FUND (DREAPTA: x >= 100)
                 elif self.ball['x'] >= 100:
+                    self.offside_pending = False
                     if self.ball['y'] >= 41.0 and self.ball['y'] <= 59.0:
                         print("GOAL!!! GOAL!!! GOAL!!!")
                         self.game_status = STATUS_GOAL
@@ -704,6 +764,7 @@ class MatchEngine:
                 # AUT DE MARGINE (SUS: y <= 0)
                 elif self.ball['y'] <= 0:
                     print("Out de margine!")     
+                    self.offside_pending = False
                     self.game_status = STATUS_OUT
                     self.restart_ready = False
                     self.restart_ball_placed = False
@@ -718,6 +779,7 @@ class MatchEngine:
                 # AUT DE MARGINE (JOS: y >= 100)
                 elif self.ball['y'] >= 100:
                     print("Out de margine!")       
+                    self.offside_pending = False
                     self.game_status = STATUS_OUT
                     self.restart_ready = False
                     self.restart_ball_placed = False
@@ -767,7 +829,11 @@ class MatchEngine:
                 "restart_ready" : self.restart_ready,
                 "restart_ball_placed" : self.restart_ball_placed,
                 "restart_ball_x" : self.restart_ball_x,
-                "restart_ball_y" : self.restart_ball_y
+                "restart_ball_y" : self.restart_ball_y,
+                "offside_line_x" : self.offside_line_x,
+                "offside_spot_x" : self.offside_spot_x,
+                "offside_spot_y" : self.offside_spot_y,
+                "offside_defending_team" : self.offside_defending_team
             }
             
             
@@ -775,6 +841,20 @@ class MatchEngine:
             self.pub_socket.send_json(game_state)
             # delay pentru a limita FPS-ul
             time.sleep(0.05)
+
+    def get_second_last_defender_x(self, defending_team):
+        # Returneaza coordonata X a penultimului aparator (inclusiv portarul) conform regulii FIFA de ofsaid
+        def_xs = [p["x"] for p in self.players.values() if p.get("team") == defending_team]
+        if len(def_xs) < 2:
+            return 85.0 if defending_team == "B" else 15.0
+        if defending_team == "B":
+            # Echipa B apara poarta din dreapta (x = 100) -> sortam descrescator
+            def_xs.sort(reverse=True)
+            return def_xs[1]
+        else:
+            # Echipa A apara poarta din stanga (x = 0) -> sortam crescator
+            def_xs.sort()
+            return def_xs[1]
 
     def move_player_towards(self, player_data, target_x, target_y, speed):
         player_x = player_data["x"]

@@ -215,6 +215,20 @@ class GoalkeeperAgent(PlayerAgent):
                             self.dealer_socket.send_json(intention)
 
                 # ===================================
+                # OFSAID! LOVITURA LIBERA INDIRECTA
+                # ===================================
+                elif message["game_status"] == STATUS_OFFSIDE:
+                    if self.state != STATE_WAIT_FREE_KICK:
+                        self.state = STATE_WAIT_FREE_KICK
+                        intention = {
+                            "agent_id": self.agent_id,
+                            "action": self.state,
+                            "target_x": 2.0 if self.team == "A" else 98.0,
+                            "target_y": 50.0
+                        }
+                        self.dealer_socket.send_json(intention)
+
+                # ===================================
                 # JOCUL ESTE IN DESFASURARE (PLAYING)
                 # ===================================
                 else:
@@ -230,7 +244,7 @@ class GoalkeeperAgent(PlayerAgent):
                         pass
 
                     # E IN FAZA FIXA SI A FOST EXECUTATA => TRECE IN IDLE 
-                    elif self.state in [STATE_DO_THROW_IN, STATE_WAIT_THROW_IN, STATE_DO_CORNER, STATE_WAIT_CORNER, STATE_DO_GOAL_KICK, STATE_WAIT_GOAL_KICK]:
+                    elif self.state in [STATE_DO_THROW_IN, STATE_WAIT_THROW_IN, STATE_DO_CORNER, STATE_WAIT_CORNER, STATE_DO_GOAL_KICK, STATE_WAIT_GOAL_KICK, STATE_DO_FREE_KICK, STATE_WAIT_FREE_KICK]:
                         self.state = STATE_IDLE
                         intention = {
                             "agent_id" : self.agent_id,

@@ -5,7 +5,7 @@ import json
 import subprocess
 import sys
 import time
-from config import STATUS_GOAL, STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_MATCH_OVER, STATUS_PLAYING, STATUS_START_GAME, STATE_KICK
+from config import STATUS_GOAL, STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_OFFSIDE, STATUS_MATCH_OVER, STATUS_PLAYING, STATUS_START_GAME, STATE_KICK
 import math
 import random
 
@@ -348,6 +348,11 @@ class GameVisualizer:
             if current_status == STATUS_GOAL and self.last_status != STATUS_GOAL:
                 if self.sound_goal:
                     self.sound_goal.play()
+
+            # Fluierul arbitrului la OFSAID
+            if current_status == STATUS_OFFSIDE and self.last_status != STATUS_OFFSIDE:
+                if self.sound_whistle:
+                    self.sound_whistle.play()
             
             # Logica de Fizica a mingii pentru KICK si GASP
             ball_vx = message["ball"]["velocity_x"]
@@ -370,6 +375,46 @@ class GameVisualizer:
             # 4. Extragem X si Y pentru minge
             ball_x = self.stadium_padding_x + (message["ball"]["x"] * (self.play_width / 100.0))
             ball_y = self.stadium_padding_y + (message["ball"]["y"] * (self.play_height / 100.0))
+
+            # 4.5. LINIA VAR DE OFSAID SI MARCAJUL PUNCTULUI DE REPUNERE (STATUS_OFFSIDE)
+            if message.get("game_status") == STATUS_OFFSIDE:
+                off_line_x = message.get("offside_line_x")
+                off_spot_x = message.get("offside_spot_x")
+                off_spot_y = message.get("offside_spot_y")
+
+                if off_line_x is not None:
+                    screen_line_x = int(self.stadium_padding_x + (float(off_line_x) * (self.play_width / 100.0)))
+                    top_y = self.stadium_padding_y
+                    bot_y = self.stadium_padding_y + self.play_height
+                    dash_len = max(8, int(12 * self.scale))
+                    gap_len = max(5, int(7 * self.scale))
+                    line_thickness = max(2, int(3 * self.scale))
+
+                    # Glow subtil sub linia VAR
+                    glow_surf = pygame.Surface((int(14 * self.scale), self.play_height), pygame.SRCALPHA)
+                    glow_surf.fill((0, 230, 255, 45))
+                    self.screen.blit(glow_surf, (screen_line_x - int(7 * self.scale), top_y))
+
+                    # Linie punctata stil TV VAR (Galben-Aurie / Cyan)
+                    curr_y = top_y
+                    while curr_y < bot_y:
+                        end_y = min(bot_y, curr_y + dash_len)
+                        pygame.draw.line(self.screen, (255, 230, 0), (screen_line_x, curr_y), (screen_line_x, end_y), line_thickness)
+                        curr_y += dash_len + gap_len
+
+                    # Eticheta "VAR OFFSIDE" pe linia de ofsaid
+                    var_badge = self.small_font.render("VAR LINE", True, (255, 230, 0))
+                    badge_bg = pygame.Rect(0, 0, var_badge.get_width() + int(10 * self.scale), var_badge.get_height() + int(4 * self.scale))
+                    badge_bg.center = (screen_line_x, top_y + int(16 * self.scale))
+                    pygame.draw.rect(self.screen, (20, 20, 20), badge_bg, border_radius=4)
+                    pygame.draw.rect(self.screen, (255, 230, 0), badge_bg, 1, border_radius=4)
+                    self.screen.blit(var_badge, var_badge.get_rect(center=badge_bg.center))
+
+                if off_spot_x is not None and off_spot_y is not None:
+                    spot_px = int(self.stadium_padding_x + (float(off_spot_x) * (self.play_width / 100.0)))
+                    spot_py = int(self.stadium_padding_y + (float(off_spot_y) * (self.play_height / 100.0)))
+                    pulse_r = int((11 + 3 * math.sin(time.time() * 8.0)) * self.scale)
+                    pygame.draw.circle(self.screen, (255, 80, 80), (spot_px, spot_py), pulse_r, max(2, int(2 * self.scale)))
 
             # 5. Parcurgem jucatorii (Desenam intai jucatorii ca mingea sa fie deasupra lor)
             for player_id, player_data in message["players"].items():
@@ -508,6 +553,15 @@ class GameVisualizer:
                 self.screen.blit(text_shadow, shadow_rect)
                 gk_rect = text_gk.get_rect(center=gk_pos)
                 self.screen.blit(text_gk, gk_rect)
+
+            elif message.get("game_status") == STATUS_OFFSIDE:
+                text_off = self.font.render("OFSAID! (VAR)", True, (255, 230, 0))
+                text_shadow = self.font.render("OFSAID! (VAR)", True, self.BLACK)
+                off_pos = (self.screen.get_width() // 2, self.stadium_padding_y - int(10 * self.scale))
+                shadow_rect = text_shadow.get_rect(center=(off_pos[0] + 3, off_pos[1] + 3))
+                self.screen.blit(text_shadow, shadow_rect)
+                off_rect = text_off.get_rect(center=off_pos)
+                self.screen.blit(text_off, off_rect)
 
             # ======================================================
 

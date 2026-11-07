@@ -5,6 +5,7 @@ import zmq
 import json
 import math
 import random
+import time
 from config import *
 
 class PlayerAgent:
@@ -306,6 +307,74 @@ class PlayerAgent:
         ty = max(4.0, min(96.0, ty))
         return tx, ty
 
+    def get_free_kick_position(self, ball_x, ball_y, has_restart):
+        """
+        Calculeaza pozitia tactica pentru Lovitura Libera Indirecta dupa OFSAID (STATUS_OFFSIDE):
+        - Echipa care repune (has_restart=True) deschide unghiuri de pasa scurta si medie.
+        - Echipa sanctionata cu ofsaid (has_restart=False) se retrage rapid la cel putin 10m in spatele mingii.
+        """
+        attack_dir = 1.0 if float(self.start_x) < 50.0 else -1.0
+        try:
+            player_num = int(self.agent_id) % 100
+        except ValueError:
+            player_num = 10
+
+        if has_restart:
+            if player_num in [3, 4]:
+                tx = ball_x + attack_dir * 8.0
+                ty = 64.0 if player_num == 3 else 36.0
+            elif player_num in [2, 5]:
+                tx = ball_x + attack_dir * 16.0
+                ty = 86.0 if player_num == 2 else 14.0
+            elif player_num == 7:
+                tx = ball_x + attack_dir * 14.0
+                ty = 50.0
+            elif player_num in [6, 8]:
+                tx = ball_x + attack_dir * 22.0
+                ty = 72.0 if player_num == 6 else 28.0
+            else:
+                tx = max(52.0, ball_x + attack_dir * 34.0) if attack_dir > 0 else min(48.0, ball_x + attack_dir * 34.0)
+                ty = self.start_y
+        else:
+            # Echipa sanctionata cu ofsaid se retrage disciplinat in propria jumatate / la min 12m de minge
+            if player_num in [9, 10, 11]:
+                tx = ball_x - attack_dir * 14.0
+                ty = self.start_y
+            elif player_num in [6, 7, 8]:
+                tx = ball_x - attack_dir * 24.0
+                ty = self.start_y
+            else:
+                tx = self.start_x
+                ty = self.start_y
+
+        tx = max(5.0, min(95.0, tx))
+        ty = max(5.0, min(95.0, ty))
+        return tx, ty
+
+    def get_offside_line_x(self, message):
+        """
+        Calculeaza linia de ofsaid a adversarilor (coordonata X a penultimului aparator advers,
+        inclusiv portarul) si linia efectiva de ofsaid FIFA (tinand cont de jumatatea terenului si minge).
+        """
+        attack_dir = 1.0 if float(self.start_x) < 50.0 else -1.0
+        opp_xs = [p["x"] for p in message["players"].values() if p.get("team") != self.team]
+        if len(opp_xs) < 2:
+            second_last_opp_x = 85.0 if attack_dir > 0 else 15.0
+        elif attack_dir > 0:
+            opp_xs.sort(reverse=True)
+            second_last_opp_x = opp_xs[1]
+        else:
+            opp_xs.sort()
+            second_last_opp_x = opp_xs[1]
+
+        ball_x = message["ball"]["x"]
+        if attack_dir > 0:
+            eff_offside_line = max(50.0, ball_x, second_last_opp_x)
+        else:
+            eff_offside_line = min(50.0, ball_x, second_last_opp_x)
+
+        return second_last_opp_x, eff_offside_line
+
     def calculate_pass_intercept(self, ball_x, ball_y, vx, vy):
         """
         Calculeaza punctul optim de intalnire / atacare a mingii in zbor
@@ -592,6 +661,20 @@ class PlayerAgent:
 
         # Cautam un culoar de pasa liber (iesire din umbra de marcaj a adversarului)
         target_x, target_y = self.find_open_support_spot(target_x, target_y, ball_x, ball_y, attack_dir, message)
+
+        # DISCIPLINA TACTICA LA LINIA DE OFSAID ("La limita ofsaidului" pe umarul ultimului fundas):
+        # Atacantii si mijlocasii ofensivi isi sincronizeaza demarcarile cu penultimul adversar (eff_offside_line).
+        # In ~82% din timp raman cu 0.45m in pozitie regulamentara (onside), iar in ~18% din timp forteaza
+        # plecarea la limita (+1.10m) pentru a genera 1-3 faze autentice de ofsaid / VAR pe meci!
+        _, eff_offside_line = self.get_offside_line_x(message)
+        run_timing_wave = math.sin(time.time() * 1.35 + player_num * 1.9)
+        offside_buffer = 1.10 if (run_timing_wave > 0.72 and player_num in [9, 10, 11]) else -0.45
+        max_onside_x = eff_offside_line + attack_dir * offside_buffer
+        if attack_dir > 0:
+            target_x = min(target_x, max_onside_x)
+        else:
+            target_x = max(target_x, max_onside_x)
+
         target_y = self.get_evasive_target(target_x, target_y, message)
         target_x = max(3.0, min(97.0, target_x))
         target_y = max(3.0, min(97.0, target_y))
@@ -691,7 +774,7 @@ class PlayerAgent:
 
                         
                 # Calculam cel mai apropiat jucator activ (folosind punctul de repunere daca suntem in faza fixa)
-                is_dead_ball_status = message["game_status"] in [STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK]
+                is_dead_ball_status = message["game_status"] in [STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_OFFSIDE]
                 ref_ball_x = message.get("restart_ball_x", message["ball"]["x"]) if is_dead_ball_status else message["ball"]["x"]
                 ref_ball_y = message.get("restart_ball_y", message["ball"]["y"]) if is_dead_ball_status else message["ball"]["y"]
 
@@ -859,6 +942,76 @@ class PlayerAgent:
                         intention["target_x"], intention["target_y"] = self.get_goal_kick_position(
                             ref_ball_x, ref_ball_y, my_team_has_restart)
                         self.dealer_socket.send_json(intention)
+
+                # ========================================================
+                # OFSAID! LOVITURA LIBERA INDIRECTA (STATUS_OFFSIDE + VAR)
+                # ========================================================
+                elif message["game_status"] == STATUS_OFFSIDE:
+                    def_team = message.get("offside_defending_team")
+                    if not def_team:
+                        last_touch_id = str(message.get("last_touch"))
+                        last_touch_team = message["players"].get(last_touch_id, {}).get("team", "A")
+                        def_team = "B" if last_touch_team == "A" else "A"
+
+                    my_team_has_restart = (self.team == def_team)
+                    has_active_fk_taker = any(
+                        p_d.get("team") == self.team and p_d.get("state") == STATE_DO_FREE_KICK and p_d.get("stun_frames", 0) == 0
+                        for p_d in message["players"].values()
+                    )
+
+                    # 1. Atribuirea rolurilor la fluierul de ofsaid (cu failsafe daca niciun coleg nu a preluat executia)
+                    if self.state not in [STATE_DO_FREE_KICK, STATE_WAIT_FREE_KICK] or (my_team_has_restart and not has_active_fk_taker and am_i_closest_to_ball and self.state != STATE_DO_FREE_KICK):
+                        if my_team_has_restart and am_i_closest_to_ball:
+                            self.state = STATE_DO_FREE_KICK
+                        else:
+                            self.state = STATE_WAIT_FREE_KICK
+
+                        intention = {
+                            "agent_id": self.agent_id,
+                            "action": self.state
+                        }
+                        if self.state == STATE_WAIT_FREE_KICK:
+                            intention["target_x"], intention["target_y"] = self.get_free_kick_position(
+                                ref_ball_x, ref_ball_y, my_team_has_restart)
+                        self.dealer_socket.send_json(intention)
+
+                    # 2. Executia loviturii libere indirecte de catre cel mai apropiat fundas/mijlocas
+                    if self.state == STATE_DO_FREE_KICK and self.calculate_distance(message["ball"]["x"], message["ball"]["y"]) < 2.5:
+                        if message.get("restart_ready", False) and message.get("restart_ball_placed", True):
+                            best_target_x, best_target_y = 50.0, 50.0
+                            best_target_id = None
+                            best_score = -999.0
+                            attack_dir_fk = 1.0 if float(self.start_x) < 50.0 else -1.0
+
+                            for p_id, p_data in message["players"].items():
+                                if p_data["team"] == self.team and str(p_id) != str(self.agent_id) and p_data["stun_frames"] == 0:
+                                    if p_data.get("role") == "GK" or str(p_id) in ["1", "101"]:
+                                        continue
+                                    dist = math.hypot(p_data["x"] - self.x, p_data["y"] - self.y)
+                                    if dist < 5.0 or dist > 38.0:
+                                        continue
+                                    # Cautam cel mai liber coechipier aflat in fata sau lateral pentru constructie
+                                    min_opp_d = 99.0
+                                    for o_id, o_data in message["players"].items():
+                                        if o_data["team"] != self.team and o_data["stun_frames"] == 0:
+                                            d_o = math.hypot(o_data["x"] - p_data["x"], o_data["y"] - p_data["y"])
+                                            if d_o < min_opp_d:
+                                                min_opp_d = d_o
+                                    prog = (p_data["x"] - self.x) * attack_dir_fk
+                                    sc = min(min_opp_d, 12.0) * 6.0 + prog * 1.5 - abs(dist - 16.0) * 1.2
+                                    if sc > best_score:
+                                        best_score = sc
+                                        best_target_x = p_data["x"]
+                                        best_target_y = p_data["y"]
+                                        best_target_id = p_id
+
+                            fk_dist = math.hypot(best_target_x - self.x, best_target_y - self.y)
+                            fk_power = min(max(0.85 + fk_dist * 0.052, 1.35), 2.85)
+                            intention = self.prepare_kick(best_target_x, best_target_y, power = fk_power, action_type = STATE_PASS)
+                            if best_target_id is not None:
+                                intention["target_agent_id"] = str(best_target_id)
+                            self.dealer_socket.send_json(intention)
+                            self.state = STATE_IDLE
                 
                 # ===================================
                 # JOCUL ESTE IN DESFASURARE (PLAYING)
@@ -945,7 +1098,7 @@ class PlayerAgent:
                         pass
 
                     # E IN FAZA FIXA SI A FOST EXECUTATA => TRECE IN IDLE 
-                    elif self.state in [STATE_DO_THROW_IN, STATE_WAIT_THROW_IN, STATE_DO_CORNER, STATE_WAIT_CORNER, STATE_DO_GOAL_KICK, STATE_WAIT_GOAL_KICK]:
+                    elif self.state in [STATE_DO_THROW_IN, STATE_WAIT_THROW_IN, STATE_DO_CORNER, STATE_WAIT_CORNER, STATE_DO_GOAL_KICK, STATE_WAIT_GOAL_KICK, STATE_DO_FREE_KICK, STATE_WAIT_FREE_KICK]:
                         self.state = STATE_IDLE
                         intention = {
                             "agent_id" : self.agent_id,
@@ -1414,6 +1567,16 @@ class PlayerAgent:
                                 current_pass_score = 110
                                 closest_opponent_to_receiver = 100
                                 is_pass_lane_blocked = False
+
+                                # VERIFICARE INTELIGENTA OFSAID LA PASA:
+                                # Evitam sa pasam catre un coleg aflat clar in ofsaid (> 1.65m), dar permitem pasele
+                                # filtrante "la limita ofsaidului" (0.55m - 1.65m) care pot declansa faze VAR spectaculoase!
+                                _, eff_offside_line = self.get_offside_line_x(message)
+                                offside_margin = (player_data["x"] - eff_offside_line) * attack_direction
+                                if offside_margin > 1.65:
+                                    current_pass_score -= 220
+                                elif offside_margin > 0.55:
+                                    current_pass_score -= 18
 
                                 # Verificam culoarul de pasa
                                 dx_pass = target_pass_x - self.x
