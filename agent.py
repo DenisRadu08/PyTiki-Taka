@@ -27,6 +27,7 @@ class PlayerAgent:
         self.give_and_go_y = None
         self.last_passer_id = None
         self.one_two_window_frames = 0
+        self.dribble_touches = 0
         self.weave_seed = (int(agent_id) % 100) * 1.73 if str(agent_id).isdigit() else random.uniform(0.0, 6.28)
         self.last_dribble_angle = 0.0
         self.context=zmq.Context()
@@ -427,11 +428,11 @@ class PlayerAgent:
             min_opp_dist = 99.0
             lane_blocked = False
             for opp_id, opp_data in message["players"].items():
-                if opp_data["team"] != self.team and opp_data["stun_frames"] == 0:
+                if opp_data["team"] != self.team:
                     d_opp = math.hypot(opp_data["x"] - cx, opp_data["y"] - cy)
                     if d_opp < min_opp_dist:
                         min_opp_dist = d_opp
-                    # Verificam daca adversarul se afla pe linia de pasa dintre minge si (cx, cy)
+                    # Verificam daca adversarul (chiar si incetinit dupa tackle ratat) se afla pe linia de pasa dintre minge si (cx, cy)
                     dx_o = opp_data["x"] - ball_x
                     dy_o = opp_data["y"] - ball_y
                     proj = dx_o * nx_b + dy_o * ny_b
@@ -442,7 +443,7 @@ class PlayerAgent:
 
             min_team_dist = 99.0
             for tm_id, tm_data in message["players"].items():
-                if tm_data["team"] == self.team and str(tm_id) != str(self.agent_id) and tm_data["stun_frames"] == 0:
+                if tm_data["team"] == self.team and str(tm_id) != str(self.agent_id):
                     if str(tm_id) == str(message.get("possession")):
                         continue
                     d_tm = math.hypot(tm_data["x"] - cx, tm_data["y"] - cy)
@@ -783,11 +784,11 @@ class PlayerAgent:
             if dist_goal_x > 16.0 and abs(deg) < 5.0:
                 score -= 9.0
 
-            # Verificam spatiul liber si ocolirea adversarilor pe acest culoar de 9.5m
+            # Verificam spatiul liber si ocolirea adversarilor (inclusiv cei incetiniti dupa tackle!) pe acest culoar de 9.5m
             min_opp_at_wp = 99.0
             corridor_penalty = 0.0
             for opp_id, opp_data in message["players"].items():
-                if opp_data["team"] != self.team and opp_data["stun_frames"] == 0:
+                if opp_data["team"] != self.team:
                     if (opp_data.get("role") == "GK" or str(opp_id) in ["1", "101"]) and dist_goal_x > 14.0:
                         continue
                     dx_o = opp_data["x"] - self.x
@@ -803,9 +804,9 @@ class PlayerAgent:
                     proj = dx_o * dir_x + dy_o * dir_y
                     if -0.4 < proj < lookahead + 1.0:
                         perp = abs(dx_o * dir_y - dy_o * dir_x)
-                        if perp < 3.6:
-                            prox_factor = 1.0 + (lookahead - max(0.0, proj)) * 0.14
-                            corridor_penalty += (3.6 - perp) * 26.0 * prox_factor
+                        if perp < 2.6:
+                            prox_factor = 1.0 + (lookahead - max(0.0, proj)) * 0.12
+                            corridor_penalty += (2.6 - perp) * 19.5 * prox_factor
 
             score -= corridor_penalty
             score += min(min_opp_at_wp, 8.5) * 5.8
@@ -819,6 +820,171 @@ class PlayerAgent:
         # Netezim unghiul ales pentru o curba organica de alergare
         self.last_dribble_angle = 0.65 * self.last_dribble_angle + 0.35 * best_deg
         return max(2.5, min(97.5, best_wx)), max(4.0, min(96.0, best_wy))
+
+    def compute_defend_support_target(self, message):
+        """
+        Calculeaza pozitionarea defensiva compacta (bloc defensiv strans in jurul careului de 16m,
+        fundasi laterali trasi in interior, dublaj central automat cand un coleg e depasit
+        si marcaj hibrid care prioritizeaza axul central al portii).
+        """
+        attack_dir = 1.0 if float(self.start_x) < 50.0 else -1.0
+        own_goal_x = 0.0 if attack_dir > 0 else 100.0
+        ball_x = message["ball"]["x"]
+        ball_y = message["ball"]["y"]
+        try:
+            p_num = int(self.agent_id) % 100
+        except ValueError:
+            p_num = 10
+
+        t_def = time.time()
+        def_wave_x = math.cos(t_def * 1.10 + self.weave_seed)
+        def_wave_y = math.sin(t_def * 1.38 + self.weave_seed * 1.4)
+        is_offside_trap_def = (
+            message.get("game_mode") == "scenarios"
+            and message.get("active_scenario") == "OFFSIDE_VAR"
+            and self.team == "B"
+            and p_num in [2, 3, 4, 5]
+        )
+
+        # Distanta mingii fata de propria poarta pe axa OX (0m = pe linia portii, 100m = poarta adversa)
+        dist_ball_to_own_goal_x = ball_x if attack_dir > 0 else (100.0 - ball_x)
+
+        if p_num in [9, 10, 11]:
+            # Atacantii inchid culoarele centrale de pasa in arc, coborand pana la ~38m cand echipa se apara jos
+            base_zx = (38.0 + (ball_x - 50.0) * 0.24) if attack_dir > 0 else (62.0 + (ball_x - 50.0) * 0.24)
+            zone_x = base_zx + def_wave_x * 2.8
+            # Strangem atacantii mai aproape de axul central (0.60 start_y + 0.40 centrul terenului)
+            compact_start_y = 50.0 + (self.start_y - 50.0) * 0.65
+            zone_y = compact_start_y + (ball_y - 50.0) * 0.35 + def_wave_y * 3.6
+        elif p_num in [6, 7, 8]:
+            # Mijlocasii formeaza un scut compact chiar in fata careului (la 8-10m in fata fundasilor centrali)
+            def_line_x = (15.5 + max(-6.0, (ball_x - 50.0) * 0.22)) if attack_dir > 0 else (84.5 + min(6.0, (ball_x - 50.0) * 0.22))
+            mid_depth = 8.0 if p_num in [6, 7] else 10.5
+            zone_x = def_line_x + attack_dir * mid_depth + def_wave_x * 2.0
+
+            # Baza laterala foarte compacta in fata careului (protejeaza zona centrala / semicercul de 16m)
+            if p_num == 6:
+                base_y = 58.0 if self.team == "A" else 56.0
+            elif p_num == 7:
+                base_y = 50.0 if self.team == "A" else 44.0
+            else:
+                base_y = 42.0 if self.team == "A" else (63.5 if float(self.start_y) > 50.0 else 36.5)
+
+            zone_y = base_y + (ball_y - 50.0) * 0.42 + def_wave_y * 2.4
+            zone_y = max(26.0, min(74.0, zone_y))
+        else:
+            # Fundasii (2, 3, 4, 5): Bloc defensiv compact la marginea careului de 16m!
+            if is_offside_trap_def:
+                zone_x = 62.0
+                zone_y = 0.72 * self.start_y + 0.28 * ball_y
+            else:
+                base_line_x = (15.5 + max(-6.0, (ball_x - 50.0) * 0.20)) if attack_dir > 0 else (84.5 + min(6.0, (ball_x - 50.0) * 0.20))
+                # Fundasii centrali (3, 4) stau cu 1m mai aproape de poarta pentru acoperire in spatele lateralilor
+                cb_offset = -1.0 * attack_dir if p_num in [3, 4] else 0.5 * attack_dir
+                zone_x = base_line_x + cb_offset + def_wave_x * 1.4
+
+                # Compactare laterala (Strangerea centrului / "Tucking inside"):
+                # Careul de 16m este intre Y = 29.84 si Y = 70.16.
+                # Fundasii centrali (3, 4) pazesc axul portii (55.0 si 45.0),
+                # iar fundasii laterali (2, 5) strang pe marginile careului (65.0 si 35.0), NU pe tusa!
+                if p_num == 3:
+                    base_y = 55.0
+                    shift_y = (ball_y - 50.0) * 0.40
+                    zone_y = max(34.0, min(66.0, base_y + shift_y + def_wave_y * 1.6))
+                elif p_num == 4:
+                    base_y = 45.0
+                    shift_y = (ball_y - 50.0) * 0.40
+                    zone_y = max(34.0, min(66.0, base_y + shift_y + def_wave_y * 1.6))
+                elif p_num == 2:
+                    # Fundas dreapta/sus: strange langa careu (65.0), iar daca mingea e pe flancul opus coboara pana la ~57
+                    base_y = 65.0
+                    shift_y = (ball_y - 50.0) * 0.46
+                    zone_y = max(55.5, min(77.0, base_y + shift_y + def_wave_y * 1.8))
+                else:
+                    # Fundas stanga/jos (5): strange langa careu (35.0), iar daca mingea e pe flancul opus urca pana la ~43
+                    base_y = 35.0
+                    shift_y = (ball_y - 50.0) * 0.46
+                    zone_y = max(23.0, min(44.5, base_y + shift_y + def_wave_y * 1.8))
+
+        target_x, target_y = zone_x, zone_y
+
+        # 2. DUBLAJ CENTRAL AUTOMAT ("COVER / SWEEPER"):
+        # Daca mingea este in jumatatea noastra (< 44m de poarta) si un coleg din aparare a iesit la intampinare
+        # (sau a fost depasit / incetinit cu stun_frames > 0), ceilalti fundasi centrali si inchizatorul
+        # inchid imediat culoarul direct dintre minge si centrul portii (50.0), ca atacantul sa nu ramana niciodata singur!
+        if not is_offside_trap_def and p_num in [2, 3, 4, 5, 6, 7] and dist_ball_to_own_goal_x < 44.0:
+            defender_stepped_out = False
+            for tid, tdata in message["players"].items():
+                if tdata["team"] == self.team and str(tid) != str(self.agent_id):
+                    try:
+                        t_num = int(tid) % 100
+                    except ValueError:
+                        t_num = 10
+                    if t_num in [2, 3, 4, 5, 6, 7]:
+                        d_tm_ball = math.hypot(tdata["x"] - ball_x, tdata["y"] - ball_y)
+                        if tdata.get("stun_frames", 0) > 0 or d_tm_ball < 6.5:
+                            defender_stepped_out = True
+                            break
+
+            if defender_stepped_out:
+                # Axa directa minge -> centrul portii (own_goal_x, 50.0)
+                dx_bg = own_goal_x - ball_x
+                dy_bg = 50.0 - ball_y
+                d_bg = math.hypot(dx_bg, dy_bg)
+                if d_bg > 1.0:
+                    cover_dist = min(6.2, max(3.5, d_bg * 0.32))
+                    cover_x = ball_x + (dx_bg / d_bg) * cover_dist
+                    cover_y = ball_y + (dy_bg / d_bg) * cover_dist
+                    # Fundasii centrali (3, 4) si inchizatorul (7 / 6) strang puternic spre punctul de dublaj
+                    if p_num in [3, 4, 7] and math.hypot(zone_x - cover_x, zone_y - cover_y) < 18.0:
+                        # Pastram o mica separare intre fundasii centrali (+2.2m / -2.2m) ca sa nu se suprapuna
+                        sep_y = 2.2 if p_num == 3 else (-2.2 if p_num == 4 else 0.0)
+                        target_x = 0.55 * zone_x + 0.45 * cover_x
+                        target_y = 0.50 * zone_y + 0.50 * (cover_y + sep_y)
+
+        # 3. Marcaj hibrid Zonal-Om orientat pe Pelnita Centrala ("Central Funnel"):
+        # Fundasii nu se mai lasa trasi pe tusa de extremele adverse! Marcheaza doar adversarii care ameninta
+        # zona centrala (24 <= Y <= 76) si pastreaza 52% ancora zonala compacta.
+        if p_num in [2, 3, 4, 5, 6, 7, 8] and not is_offside_trap_def:
+            best_mark_opp = None
+            best_mark_dist = 11.5 if p_num in [2, 3, 4, 5] else 13.5
+            poss_id = str(message.get("possession"))
+
+            for opp_id, opp_data in message["players"].items():
+                if opp_data["team"] != self.team:
+                    if str(opp_id) == poss_id:
+                        continue
+                    if opp_data.get("role") == "GK" or str(opp_id) in ["1", "101"]:
+                        continue
+                    # Fundasii ignora adversarii lipiti de tusa daca mingea nu este pe acel flanc
+                    if p_num in [2, 3, 4, 5]:
+                        if (opp_data["y"] > 76.0 and ball_y < 68.0) or (opp_data["y"] < 24.0 and ball_y > 32.0):
+                            continue
+                    dist_to_zone = math.hypot(opp_data["x"] - target_x, opp_data["y"] - target_y)
+                    if dist_to_zone < best_mark_dist:
+                        best_mark_dist = dist_to_zone
+                        best_mark_opp = opp_data
+
+            if best_mark_opp is not None:
+                # Ne asezam "goal-side" (intre adversar si centrul portii noastre) la 3.2m
+                dx_goal = own_goal_x - best_mark_opp["x"]
+                dy_goal = 50.0 - best_mark_opp["y"]
+                d_goal = math.hypot(dx_goal, dy_goal)
+                if d_goal > 0.1:
+                    mark_x = best_mark_opp["x"] + (dx_goal / d_goal) * 3.2 + def_wave_x * 0.9
+                    mark_y = best_mark_opp["y"] + (dy_goal / d_goal) * 3.2 + def_wave_y * 1.2
+                else:
+                    mark_x, mark_y = target_x, target_y
+
+                # Pastram pondere mare pe structura compacta (52% zona compacta, 48% marcaj)
+                # pentru ca apararea sa nu poata fi desfacuta usor
+                target_x = 0.48 * mark_x + 0.52 * target_x
+                target_y = 0.48 * mark_y + 0.52 * target_y
+
+        target_x = max(4.5, min(95.5, target_x))
+        target_y = max(6.0, min(94.0, target_y))
+        target_y = self.get_evasive_target(target_x, target_y, message)
+        return target_x, target_y
 
     def run(self):
         # Inregistrare agenti
@@ -890,6 +1056,8 @@ class PlayerAgent:
 
                 # verdict: este echipa noastra in atac?
                 we_have_possession = (team_in_possession == self.team)
+                if str(message.get("possession")) != str(self.agent_id) and str(message.get("last_touch")) != str(self.agent_id):
+                    self.dribble_touches = 0
 
                 # Memorarea pasatorului pentru combinatii "Un-Doi" (1-2 Wall Pass) cu fereastra scurta de timp
                 if str(message.get("intended_receiver")) == str(self.agent_id) and message.get("last_touch") is not None:
@@ -1034,7 +1202,7 @@ class PlayerAgent:
                                     min_opp_d = 99.0
                                     lane_blocked = False
                                     for o_id, o_data in message["players"].items():
-                                        if o_data["team"] != self.team and o_data["stun_frames"] == 0:
+                                        if o_data["team"] != self.team:
                                             d_o = math.hypot(o_data["x"] - player_data["x"], o_data["y"] - player_data["y"])
                                             if d_o < min_opp_d:
                                                 min_opp_d = d_o
@@ -1122,7 +1290,7 @@ class PlayerAgent:
                                     min_opp_d = 99.0
                                     lane_blocked = False
                                     for o_id, o_data in message["players"].items():
-                                        if o_data["team"] != self.team and o_data["stun_frames"] == 0:
+                                        if o_data["team"] != self.team:
                                             d_o = math.hypot(o_data["x"] - p_data["x"], o_data["y"] - p_data["y"])
                                             if d_o < min_opp_d:
                                                 min_opp_d = d_o
@@ -1231,7 +1399,7 @@ class PlayerAgent:
                                     # Cautam cel mai liber coechipier aflat in fata sau lateral pentru constructie
                                     min_opp_d = 99.0
                                     for o_id, o_data in message["players"].items():
-                                        if o_data["team"] != self.team and o_data["stun_frames"] == 0:
+                                        if o_data["team"] != self.team:
                                             d_o = math.hypot(o_data["x"] - p_data["x"], o_data["y"] - p_data["y"])
                                             if d_o < min_opp_d:
                                                 min_opp_d = d_o
@@ -1266,10 +1434,9 @@ class PlayerAgent:
                     # numaram cati jucatori (aliati sau inamici) sunt lipiti de minge
                     players_near_ball = 0
                     for player_id, player_data in message["players"].items():
-                        if player_data["stun_frames"] == 0:
-                            dist_agent_to_ball = math.hypot(player_data["x"] - message["ball"]["x"], player_data["y"] - message["ball"]["y"])
-                            if dist_agent_to_ball < 2.5: # raza gramezii
-                                players_near_ball += 1
+                        dist_agent_to_ball = math.hypot(player_data["x"] - message["ball"]["x"], player_data["y"] - message["ball"]["y"])
+                        if dist_agent_to_ball < 2.5: # raza gramezii
+                            players_near_ball += 1
 
                     # daca sunt in gramada (eu si inca cineva) si stam asa
                     if distance_agent_to_ball < 2.5 and players_near_ball >= 2:
@@ -1283,13 +1450,13 @@ class PlayerAgent:
                     own_goal_x = 0.0 if float(self.start_x) < 50.0 else 100.0
                     distance_ball_to_own_goal = abs(message["ball"]["x"] - own_goal_x)
 
-                    # distanta ideala este cu 4 metri mai aproape de poarta,
+                    # distanta ideala este cu 3.5 metri mai aproape de poarta,
                     # dar niciodata mai putin de 0 metri
-                    ideal_distance = max(0.0, distance_ball_to_own_goal - 4.0)
+                    ideal_distance = max(0.0, distance_ball_to_own_goal - 3.5)
 
-                    # punctul ideal X: la 4 metri in fata adversarului (goal-side)
+                    # punctul ideal X si Y: la 3.5 metri in fata adversarului, inchizand unghiul spre centrul portii (50.0)
                     ideal_x = abs(ideal_distance - own_goal_x)
-                    ideal_y = message["ball"]["y"]
+                    ideal_y = 0.78 * message["ball"]["y"] + 0.22 * 50.0
                     if self.stun_frames > 0:
                         my_pressing_score = -999.0 # daca suntem pe jos
                     else:
@@ -1310,13 +1477,15 @@ class PlayerAgent:
                             if teammate_pressing_score > my_pressing_score:
                                 better_teammates_count += 1
                     
-                    # Permitem STRICT 1 jucator principal de pressing (sau al 2-lea pentru dublaj doar daca e deja foarte aproape < 8.0m)
+                    # Permitem 1 jucator principal de pressing + al 2-lea pentru dublaj / intampinare
+                    # (raza de dublaj creste la 14.5m in propria jumatate pentru a pune presiune reala pe atacant!)
+                    secondary_press_radius = 14.5 if distance_ball_to_own_goal < 48.0 else 11.5
                     if self.stun_frames > 0:
                         is_primary_chaser = False
                         is_secondary_chaser = False
                     else:
                         is_primary_chaser = (better_teammates_count == 0)
-                        is_secondary_chaser = (better_teammates_count == 1 and distance_agent_to_ball < 8.0)
+                        is_secondary_chaser = (better_teammates_count == 1 and distance_agent_to_ball < secondary_press_radius)
 
                     can_i_press = is_primary_chaser or (is_secondary_chaser and not we_have_possession and message["possession"] is not None)
 
@@ -1325,9 +1494,35 @@ class PlayerAgent:
                     goal_x_ref = 100.0 if float(self.start_x) < 50.0 else 0.0
                     distance_agent_to_opponent_goal = self.calculate_distance(goal_x_ref, 50.0)
                     
-                    # GUARD CLAUSE pentru stun
+                    # JUCATOR DEZECHILIBRAT DUPA TACKLE RATAT SAU DEPOSEDARE (stun_frames > 0):
+                    # Nu se mai opreste pe loc! Continua sa alerge/urmareasca faza, iar motorul fizic
+                    # ii aplica penalizarea de viteza (-40%, -60% sau -75% in functie de unghiul de tackle).
                     if self.stun_frames > 0:
-                        pass
+                        if not we_have_possession and distance_agent_to_ball < 16.0 and not is_gk_protected and not is_opponent_kickoff:
+                            self.state = STATE_CHASE
+                            intention = {
+                                "agent_id" : self.agent_id,
+                                "action" : self.state
+                            }
+                        elif we_have_possession:
+                            self.state = STATE_ATTACK_SUPPORT
+                            sup_x, sup_y = self.compute_attack_support_target(message)
+                            intention = {
+                                "agent_id" : self.agent_id,
+                                "action" : self.state,
+                                "target_x" : sup_x,
+                                "target_y" : sup_y
+                            }
+                        else:
+                            self.state = STATE_DEFEND_SUPPORT
+                            def_x, def_y = self.compute_defend_support_target(message)
+                            intention = {
+                                "agent_id" : self.agent_id,
+                                "action" : self.state,
+                                "target_x" : def_x,
+                                "target_y" : def_y
+                            }
+                        self.dealer_socket.send_json(intention)
 
                     # EXECUTIA REALISTA A LOVITURII DE INCEPERE (KICK-OFF):
                     # Jucatorul desemnat (#10 pentru A sau #110 pentru B) aflat deja langa minge la (50, 50)
@@ -1532,86 +1727,15 @@ class PlayerAgent:
                                 "action" : self.state
                             }
                         
-                        # mingea e la adversari: pozitionare defensiva + MARCAJ HIBRID ZONAL-OM (cu perna de 3.8m)
+                        # mingea e la adversari: pozitionare defensiva compacta + dublaj central + marcaj hibrid
                         else:
                             self.state = STATE_DEFEND_SUPPORT
-                            attack_dir = 1.0 if float(self.start_x) < 50.0 else -1.0
-                            own_goal_x = 0.0 if attack_dir > 0 else 100.0
-                            ball_x = message["ball"]["x"]
-                            ball_y = message["ball"]["y"]
-                            try:
-                                p_num = int(self.agent_id) % 100
-                            except ValueError:
-                                p_num = 10
-
-                            # 1. Calculam ancora zonala de baza + miscare organica in arc (fara glisare robotizata doar pe OX!)
-                            t_def = time.time()
-                            def_wave_x = math.cos(t_def * 1.10 + self.weave_seed)
-                            def_wave_y = math.sin(t_def * 1.38 + self.weave_seed * 1.4)
-                            is_offside_trap_def = (message.get("game_mode") == "scenarios" and message.get("active_scenario") == "OFFSIDE_VAR" and self.team == "B" and p_num in [2, 3, 4, 5])
-
-                            if p_num in [9, 10, 11]:
-                                # Atacantii nu stau pe o linie fixa la mijloc, ci inchid in arc culoarele de pasa
-                                base_zx = 47.0 + (ball_x - 50.0) * 0.18 if attack_dir > 0 else 53.0 + (ball_x - 50.0) * 0.18
-                                zone_x = base_zx + def_wave_x * 3.8
-                                zone_y = self.start_y + (ball_y - 50.0) * 0.34 + def_wave_y * 5.2
-                            elif p_num in [6, 7, 8]:
-                                # Mijlocasii formeaza blocul median cu flotare diagonala activa pe culoarele de pasa
-                                zone_x = (29.0 + (ball_x - 50.0) * 0.28 if attack_dir > 0 else 71.0 + (ball_x - 50.0) * 0.28) + def_wave_x * 2.8
-                                zone_y = 0.55 * self.start_y + 0.45 * ball_y + def_wave_y * 4.2
-                            else:
-                                # Fundasii protejeaza linia careului (sau tin Offside Trap la 62.0m in scenariul OFFSIDE_VAR)
-                                if is_offside_trap_def:
-                                    zone_x = 62.0
-                                    zone_y = 0.72 * self.start_y + 0.28 * ball_y
-                                else:
-                                    zone_x = (16.5 + (ball_x - 50.0) * 0.16 if attack_dir > 0 else 83.5 + (ball_x - 50.0) * 0.16) + def_wave_x * 2.0
-                                    zone_y = 0.72 * self.start_y + 0.28 * ball_y + def_wave_y * 3.2
-
-                            target_x, target_y = zone_x, zone_y
-
-                            # 2. Marcaj hibrid Zonal-Om pentru fundasi si mijlocasi (2..8):
-                            # Cautam un adversar fara minge intrat in zona noastra de responsabilitate (raza 14m)
-                            if p_num in [2, 3, 4, 5, 6, 7, 8] and not is_offside_trap_def:
-                                best_mark_opp = None
-                                best_mark_dist = 14.0
-                                poss_id = str(message.get("possession"))
-
-                                for opp_id, opp_data in message["players"].items():
-                                    if opp_data["team"] != self.team and opp_data["stun_frames"] == 0:
-                                        if str(opp_id) == poss_id:
-                                            continue
-                                        if opp_data.get("role") == "GK" or str(opp_id) in ["1", "101"]:
-                                            continue
-                                        dist_to_zone = math.hypot(opp_data["x"] - zone_x, opp_data["y"] - zone_y)
-                                        if dist_to_zone < best_mark_dist:
-                                            best_mark_dist = dist_to_zone
-                                            best_mark_opp = opp_data
-
-                                if best_mark_opp is not None:
-                                    # Ne asezam "goal-side" (intre adversar si poarta noastra) la o distanta echilibrata de 3.8m
-                                    # cu un usor joc de glezne (jockeying diagonal) ca in fotbalul real!
-                                    dx_goal = own_goal_x - best_mark_opp["x"]
-                                    dy_goal = 50.0 - best_mark_opp["y"]
-                                    d_goal = math.hypot(dx_goal, dy_goal)
-                                    if d_goal > 0.1:
-                                        mark_x = best_mark_opp["x"] + (dx_goal / d_goal) * 3.8 + def_wave_x * 1.2
-                                        mark_y = best_mark_opp["y"] + (dy_goal / d_goal) * 3.8 + def_wave_y * 1.8
-                                    else:
-                                        mark_x, mark_y = zone_x, zone_y
-
-                                    # Combinam 65% marcajul la om cu 35% pozitia zonala pentru a nu fi trasi complet din formatie
-                                    target_x = 0.65 * mark_x + 0.35 * zone_x
-                                    target_y = 0.65 * mark_y + 0.35 * zone_y
-
-                            target_x = max(4.0, min(96.0, target_x))
-                            target_y = max(4.0, min(96.0, target_y))
-                            target_y = self.get_evasive_target(target_x, target_y, message)
+                            def_x, def_y = self.compute_defend_support_target(message)
                             intention = {
                                 "agent_id" : self.agent_id,
                                 "action" : self.state,
-                                "target_x" : target_x,
-                                "target_y" : target_y
+                                "target_x" : def_x,
+                                "target_y" : def_y
                             }
                         
                         self.dealer_socket.send_json(intention)
@@ -1708,16 +1832,15 @@ class PlayerAgent:
                                 "agent_id" : self.agent_id,
                                 "action" : self.state
                             }
-                        # nu are posesia si e departe de minge => sustine apararea
+                        # nu are posesia si e departe de minge => sustine apararea compact
                         else:
                             self.state = STATE_DEFEND_SUPPORT
-                            target_x = 0.7 * self.start_x + 0.3 * message["ball"]["x"]
-                            target_y = 0.7 * self.start_y + 0.3 * message["ball"]["y"]
+                            def_x, def_y = self.compute_defend_support_target(message)
                             intention = {
                                 "agent_id" : self.agent_id,
                                 "action" : self.state,
-                                "target_x" : target_x,
-                                "target_y" : target_y
+                                "target_x" : def_x,
+                                "target_y" : def_y
                             }
                         # trimit intentia pe retea
                         self.dealer_socket.send_json(intention)
@@ -1749,30 +1872,63 @@ class PlayerAgent:
                     # AVEM POSESIA -> DECIDEM CE FACEM CU MINGEA
                     elif message["possession"] == str(self.agent_id):
 
+                        # =====================================================================
+                        # 0. EVALUAM PRESIUNEA FRONTALA SI SPATIUL LIBER IN FATA PURTATORULUI
+                        # =====================================================================
+                        # Diferentiem intre:
+                        # - un adversar aflat IN FATA noastra (care ne blocheaza inaintarea: closest_front_opp_dist)
+                        # - un adversar aflat IN SPATELE nostru sau deja depasit/incetinit (care NU ne opreste din avansare!)
+                        attack_dir_drib = 1.0 if float(self.start_x) < 50.0 else -1.0
+                        goal_x_drib = 100.0 if attack_dir_drib > 0 else 0.0
+                        dist_to_goal_drib = math.hypot(goal_x_drib - self.x, 50.0 - self.y)
+
+                        closest_opponent_distance = 100.0
+                        closest_opponent_id = None
+                        closest_front_opp_dist = 100.0
+                        open_space_ahead = 30.0
+
+                        for opp_id, opp_data in message["players"].items():
+                            if opp_data["team"] != self.team:
+                                d_opp = self.calculate_distance(opp_data["x"], opp_data["y"])
+                                if d_opp < closest_opponent_distance:
+                                    closest_opponent_distance = d_opp
+                                    closest_opponent_id = opp_id
+
+                                if opp_data.get("role") == "GK" or str(opp_id) in ["1", "101"]:
+                                    continue
+
+                                dx_f = (opp_data["x"] - self.x) * attack_dir_drib
+                                dy_f = abs(opp_data["y"] - self.y)
+                                # Daca adversarul este incetinit dupa un tackle ratat (stun_frames > 0),
+                                # are viteza redusa (-40%..-75%), deci presiunea lui efectiva asupra driblingului e mai mica
+                                eff_d_opp = d_opp * (1.45 if opp_data.get("stun_frames", 0) > 0 else 1.0)
+
+                                # Adversar in fata sau lateral-fata (ne poate intampina)
+                                if dx_f >= -0.4 and dy_f < 5.2:
+                                    if eff_d_opp < closest_front_opp_dist:
+                                        closest_front_opp_dist = eff_d_opp
+
+                                # Culoarul direct de inaintare spre poarta adversa
+                                if dx_f > 0.0 and dy_f < 4.5:
+                                    dist_f = math.hypot(dx_f, dy_f) * (1.35 if opp_data.get("stun_frames", 0) > 0 else 1.0)
+                                    if dist_f < open_space_ahead:
+                                        open_space_ahead = dist_f
+
                         # =====================================
                         # CALCULAM CEA MAI BUNA OPTIUNE DE PASA
                         # ------- SI SCORUL PENTRU PASA -------
                         # =====================================
-                         
-                        # ==== COEFICIENTI PENTRU PASA =====
-                        closest_opponent_distance = 100
-                        # Raza de pericol a primitorului de lungimea pasei
                         pressure_radius_coef = 0.15
-                        # Scorul pentru cea mai buna pasa
-                        best_pass_score = -999
-                        # Punct optim pentru pasa
-                        optimal_point_for_pass = 12
-                        # Coeficient de severitate
+                        best_pass_score = -999.0
+                        optimal_point_for_pass = 13.0
                         severity_short_pass = 2.0
                         severity_long_pass = 0.5
-                        # Pentru siguranta
                         best_pass_target_id = None
                         best_pass_target_distance = 0.0
                         best_pass_target_x = 0.0
                         best_pass_target_y = 0.0
                         best_pass_lead_distance = 0.0
                         best_pass_is_true_tap_in = False
-                        # ==================================
             
                         for player_id, player_data in message["players"].items():
                 
@@ -1792,8 +1948,8 @@ class PlayerAgent:
                                 dx_progress_raw = (player_data["x"] - self.x) * attack_direction
                                 
                                 # este o pasa ofensiva in fata sau o combinatie pe linie/diagonala?
-                                is_forward_pass = (dx_progress_raw > 1.5)
-                                is_lateral_combo = (-2.0 <= dx_progress_raw <= 1.5)
+                                is_forward_pass = (dx_progress_raw > 2.0)
+                                is_lateral_combo = (-2.0 <= dx_progress_raw <= 2.0)
 
                                 try:
                                     rec_num = int(player_id) % 100
@@ -1805,9 +1961,10 @@ class PlayerAgent:
                                 is_rec_in_attacking_half = (attack_direction == 1.0 and player_data["x"] > 46.0) or (attack_direction == -1.0 and player_data["x"] < 54.0)
 
                                 # Verificam daca primitorul are spatiu liber in fata pentru pasa pe pozitie viitoare (pe alergare)
+                                # (Tinem cont si de adversarii incetiniti dupa un tackle ratat, fiindca sunt in picioare si pot intercepta!)
                                 rec_space_ahead = 99.0
                                 for o_id, o_data in message["players"].items():
-                                    if o_data["team"] != self.team and o_data["stun_frames"] == 0:
+                                    if o_data["team"] != self.team:
                                         d_rec_o = math.hypot(o_data["x"] - (player_data["x"] + attack_direction * 1.5), o_data["y"] - player_data["y"])
                                         if d_rec_o < rec_space_ahead:
                                             rec_space_ahead = d_rec_o
@@ -1831,9 +1988,9 @@ class PlayerAgent:
                                 target_pass_x = max(2.0, min(98.0, target_pass_x))
                                 target_pass_y = max(2.0, min(98.0, target_pass_y))
                                 
-                                # Scor initial pentru pasa
-                                current_pass_score = 110
-                                closest_opponent_to_receiver = 100
+                                # Scor initial echilibrat pentru pasa
+                                current_pass_score = 100.0
+                                closest_opponent_to_receiver = 100.0
                                 is_pass_lane_blocked = False
 
                                 # VERIFICARE INTELIGENTA OFSAID LA PASA:
@@ -1844,16 +2001,16 @@ class PlayerAgent:
                                 offside_margin = (player_data["x"] - eff_offside_line) * attack_direction
                                 if message.get("game_mode") == "scenarios" and message.get("active_scenario") == "OFFSIDE_VAR":
                                     if rec_num == 10:
-                                        current_pass_score += 350
+                                        current_pass_score += 350.0
                                     else:
-                                        current_pass_score -= 300
+                                        current_pass_score -= 300.0
                                 elif offside_margin > 1.45:
-                                    current_pass_score -= 260
+                                    current_pass_score -= 260.0
                                 elif offside_margin > 0.45:
                                     if message.get("game_mode") == "scenarios" or random.random() > 0.10:
-                                        current_pass_score -= 240
+                                        current_pass_score -= 240.0
                                     else:
-                                        current_pass_score -= 10
+                                        current_pass_score -= 10.0
 
                                 # Verificam culoarul de pasa
                                 dx_pass = target_pass_x - self.x
@@ -1867,33 +2024,29 @@ class PlayerAgent:
                                 else:
                                     nx_pass, ny_pass = 1.0,  0.0
                                 
-                                
                                 # bucla pentru a afla cel mai apropiat adversar de coechipierul caruia vrem sa ii pasam
+                                # si pentru a verifica daca vreun adversar (inclusiv unul incetinit cu stun_frames > 0!) blocheaza culoarul!
                                 for opponent_id, opponent_data in message["players"].items():
-                                    
-                                    if opponent_data["stun_frames"] > 0:
+                                    if opponent_data["team"] == self.team:
                                         continue
 
-                                    if opponent_data["team"] != self.team:
-                                        # ne intereseaza adversarii apropiati de locul unde va ajunge mingea
-                                        distance_opponent_to_target =  math.hypot(opponent_data["x"] - target_pass_x, opponent_data["y"] - target_pass_y)
-                                        if distance_opponent_to_target < closest_opponent_to_receiver:
-                                            closest_opponent_to_receiver = distance_opponent_to_target
-                                            closest_opponent_to_receiver_id = opponent_id
+                                    # ne intereseaza toti adversarii apropiati de locul unde va ajunge mingea (chiar daca sunt incetiniti dupa tackle)
+                                    distance_opponent_to_target = math.hypot(opponent_data["x"] - target_pass_x, opponent_data["y"] - target_pass_y)
+                                    if distance_opponent_to_target < closest_opponent_to_receiver:
+                                        closest_opponent_to_receiver = distance_opponent_to_target
+                                        closest_opponent_to_receiver_id = opponent_id
                                     
                                     # vectorul de la noi la adversar
                                     dx_pass_opp = opponent_data["x"] - self.x
                                     dy_pass_opp = opponent_data["y"] - self.y
 
-                                    # produsul scalar
-                                    # cat a inaintat mingea pana in dreptul adversarului
+                                    # produsul scalar: cat a inaintat mingea pana in dreptul adversarului
                                     d_pass_length = (dx_pass_opp * nx_pass) + (dy_pass_opp * ny_pass)
 
                                     # verificam daca adversarul e in fata noastra si intre noi si coechipier
                                     if 0 < d_pass_length < distance_agent_to_pass_point:
 
-                                        # produs vectorial
-                                        # distanta laterala fata de traiectorie
+                                        # produs vectorial: distanta laterala fata de traiectorie
                                         d_pass_perpendicular = abs((dx_pass_opp * ny_pass) - (dy_pass_opp * nx_pass))
 
                                         # latimea conului de blocaj
@@ -1904,24 +2057,21 @@ class PlayerAgent:
                                         # daca e in interiorul conului, blocheaza culoarul
                                         if d_pass_perpendicular < cone_width:
                                             is_pass_lane_blocked = True
-                                            # Penalizare severa: stop la pase trimise direct in corpul adversarilor!
-                                            # Daca e direct pe traiectorie (< 1.1m) sau in con, scorul scade dramatic sub 0
-                                            penalty_for_blocking = 350 if d_pass_perpendicular < 1.1 else 240
+                                            penalty_for_blocking = 350.0 if d_pass_perpendicular < 1.1 else 240.0
                                             current_pass_score -= penalty_for_blocking
-
 
                                 # cat de departe e coechipierul fata de "punctul optim de pasa"
                                 deviation = abs(distance_agent_to_pass_point - optimal_point_for_pass)
                                 
                                 # raza de presiune: mai toleranta in treimea adversa pentru a permite pase la varf
                                 is_in_final_third = (attack_direction == 1.0 and target_pass_x > 68.0) or (attack_direction == -1.0 and target_pass_x < 32.0)
-                                pressure_radius = 1.6 if is_in_final_third else min(3.0, distance_agent_to_pass_point * pressure_radius_coef)
+                                pressure_radius = 1.8 if is_in_final_third else min(3.2, distance_agent_to_pass_point * pressure_radius_coef)
                         
                                 # daca adversarul e prea aproape de coechipier
-                                if closest_opponent_to_receiver < 1.4:
-                                    current_pass_score -= 150 # primitor marcat foarte strans (om la om)
+                                if closest_opponent_to_receiver < 1.5:
+                                    current_pass_score -= 160.0 # primitor marcat foarte strans (om la om)
                                 elif closest_opponent_to_receiver < pressure_radius:
-                                    current_pass_score -= (60 if is_in_final_third else 100)
+                                    current_pass_score -= (65.0 if is_in_final_third else 105.0)
 
                                 # coechipierul e prea aproape => creste severitatea penalizarii
                                 if distance_agent_to_pass_point < optimal_point_for_pass:    
@@ -1936,8 +2086,16 @@ class PlayerAgent:
                                 my_dist_to_goal_center = math.hypot(opp_goal_x - self.x, 50.0 - self.y)
                                 rec_dist_to_goal_center = math.hypot(opp_goal_x - target_pass_x, 50.0 - target_pass_y)
 
-                                # Este o pasa de gol / cutback (coechipier in ultima treime, mai bine pozitionat spre centrul portii si liber)?
-                                is_better_shooting_spot = is_in_final_third and not is_pass_lane_blocked and (rec_dist_to_goal_center < my_dist_to_goal_center - 2.0 or (rec_dist_to_goal_center < 15.0 and abs(target_pass_y - 50.0) < abs(self.y - 50.0) - 4.0))
+                                # Este o pasa de gol / cutback (coechipier in ultima treime, net mai bine pozitionat spre centrul portii si liber)?
+                                is_better_shooting_spot = (
+                                    is_in_final_third
+                                    and not is_pass_lane_blocked
+                                    and closest_opponent_to_receiver > 3.2
+                                    and (
+                                        rec_dist_to_goal_center < my_dist_to_goal_center - 3.5
+                                        or (rec_dist_to_goal_center < 14.0 and abs(target_pass_y - 50.0) < abs(self.y - 50.0) - 5.0)
+                                    )
+                                )
 
                                 # Este un "tap-in" autentic cu poarta goala (coleg singur in 11m central, mult mai aproape de poarta decat noi)?
                                 is_candidate_true_tap_in = (
@@ -1948,56 +2106,57 @@ class PlayerAgent:
                                     and (my_dist_to_goal_center > rec_dist_to_goal_center + 3.5 or abs(self.y - 50.0) > 12.0)
                                 )
 
+                                # FILTRU ANTI-PING-PONG:
+                                # Daca abia am primit pasa de la acest coleg, nu ii returnam mingea mecanic pe loc
+                                # decat daca el a sprintat deja in fata pe un culoar de un-doi (dx >= 4.0m) sau suntem presati frontal!
+                                if self.last_passer_id is not None and str(player_id) == str(self.last_passer_id):
+                                    if dx_progress_raw < 4.0 and closest_front_opp_dist > 2.8:
+                                        current_pass_score -= 55.0
+
                                 # 1. BONUS "UN-DOI" NATURAL (NEFORTAT):
-                                # Doar daca fereastra de 1-2 e activa, culoarul e 100% liber, colegul e complet demarcat (> 4.0m de adversar),
-                                # SI noi NU suntem deja in pozitie buna de sut la marginea/interiorul careului (my_dist_to_goal_center > 19.5)!
                                 is_one_two_return = (
                                     self.one_two_window_frames > 0
                                     and self.last_passer_id is not None
                                     and str(player_id) == str(self.last_passer_id)
                                     and not is_pass_lane_blocked
-                                    and dx_progress_raw >= 1.0
+                                    and dx_progress_raw >= 4.0
                                     and closest_opponent_to_receiver > 4.0
                                     and (my_dist_to_goal_center > 19.5 or rec_dist_to_goal_center < my_dist_to_goal_center - 4.0)
                                 )
                                 if is_one_two_return:
-                                    current_pass_score += 24
+                                    current_pass_score += 20.0
 
-                                # 2. BONUS DEMARCARE ACTIVA / COMBINATIE TIKI-TAKA: coleg in ATTACK_SUPPORT bine demarcat si cu culoar liber
-                                if not is_pass_lane_blocked and player_data.get("state") == STATE_ATTACK_SUPPORT and closest_opponent_to_receiver > 3.5 and 7.0 <= distance_agent_to_pass_point <= 20.0 and dx_progress_raw >= -1.0:
-                                    current_pass_score += 22
+                                # 2. BONUS DEMARCARE ACTIVA: coleg in ATTACK_SUPPORT bine demarcat si cu culoar liber
+                                if not is_pass_lane_blocked and player_data.get("state") == STATE_ATTACK_SUPPORT and closest_opponent_to_receiver > 3.8 and 8.0 <= distance_agent_to_pass_point <= 22.0 and dx_progress_raw >= 1.5:
+                                    current_pass_score += 14.0
 
-                                # 3. BONUS PASA PE CULOAR / THROUGH-BALL: coleg avansat in fata noastra (dx >= 4.5m) cu culoar liber si spatiu!
-                                # Astfel jucatorul cu mingea prefera sa lanseze colegul pe culoar in loc sa dribleze singur la nesfarsit.
-                                if not is_pass_lane_blocked and dx_progress_raw >= 4.5 and closest_opponent_to_receiver > 3.2 and rec_space_ahead > 3.5 and 6.0 <= distance_agent_to_pass_point <= 24.0:
-                                    current_pass_score += 48
+                                # 3. BONUS PASA PE CULOAR / THROUGH-BALL: coleg avansat semnificativ in fata noastra (dx >= 6.0m) cu culoar liber si spatiu!
+                                if not is_pass_lane_blocked and dx_progress_raw >= 6.0 and closest_opponent_to_receiver > 3.6 and rec_space_ahead > 4.2 and 7.0 <= distance_agent_to_pass_point <= 25.0:
+                                    current_pass_score += 36.0
 
                                 if is_forward_pass or is_better_shooting_spot:
-                                    # Pasa progresiva spre poarta adversa sau pasa decisiva in careu:
                                     if is_in_final_third:
-                                        current_pass_score += 110
-                                        # BONUS PASA DECISIVA / EXTRA-PASS: coechipier liber si mai bine plasat pentru finalizare!
-                                        if is_better_shooting_spot and closest_opponent_to_receiver > 2.8:
-                                            current_pass_score += 70
+                                        current_pass_score += 62.0
+                                        if is_better_shooting_spot:
+                                            current_pass_score += 42.0
                                     else:
-                                        current_pass_score += 65
+                                        current_pass_score += 44.0
                                 elif is_lateral_combo:
-                                    # Pasa de combinatie pe linie / diagonala scurta (schimbare de flanc sau deschidere in half-space):
                                     if is_in_final_third:
-                                        current_pass_score += 55
+                                        current_pass_score += 22.0
                                     elif is_agent_in_attacking_half:
-                                        current_pass_score += 35
+                                        current_pass_score += 14.0
                                     else:
-                                        current_pass_score += 15
+                                        current_pass_score += 5.0
                                 else:
-                                    # Pasa inapoi (dx_progress_raw < -2.0): penalizare severa daca suntem in atac,
-                                    # astfel incat varful/mijlocasii sa combine in fata sau sa avanseze, si sa paseze in spate DOAR la nevoie!
+                                    # Pasa inapoi (dx_progress_raw < -2.0): penalizare daca suntem in atac,
+                                    # astfel incat jucatorii sa avanseze cu mingea sau sa combine in fata, si sa paseze inapoi DOAR sub presiune!
                                     if is_in_final_third:
-                                        current_pass_score -= 130
+                                        current_pass_score -= 130.0
                                     elif is_agent_in_attacking_half:
-                                        current_pass_score -= 75
+                                        current_pass_score -= 75.0
                                     else:
-                                        current_pass_score -= 15
+                                        current_pass_score -= 20.0
                                 
                                 if current_pass_score > best_pass_score:
                                     best_pass_target_id = player_id
@@ -2007,53 +2166,45 @@ class PlayerAgent:
                                     best_pass_score = current_pass_score
                                     best_pass_lead_distance = lead_distance
                                     best_pass_is_true_tap_in = is_candidate_true_tap_in
-                            
-                            # daca e adversar 
+
+                        # =====================================================================
+                        # CALCULAM SCORUL PENTRU DRIBLING (AVANSARE CU MINGEA IN SPATIU LIBER)
+                        # =====================================================================
+                        # Folosim presiunea din FATA (closest_front_opp_dist) si culoarul liber (open_space_ahead):
+                        # Daca am depasit un adversar sau adversarul ne urmareste din spate, NU ne oprim sa pasam inapoi,
+                        # ci CONDUCEM MINGEA SPRE POARTA!
+                        base_dribble_score = 92.0
+                        frontal_freedom_bonus = min(72.0, closest_front_opp_dist * 8.0)
+
+                        # 1. Bonus consistent cand avem culoar liber in fata spre poarta adversa (> 4.5m fara adversar in fata)
+                        if closest_front_opp_dist > 2.6 and open_space_ahead > 4.5:
+                            open_lane_bonus = min(66.0, (open_space_ahead - 4.5) * 5.2)
+                        else:
+                            open_lane_bonus = 0.0
+
+                        # 2. Bonus de progresie (Carry Momentum) la primele atingeri cand avem spatiu liber in fata:
+                        # In fotbalul real, cand un jucator primeste mingea si are 6-15m de teren liber in fata,
+                        # avanseaza cu mingea la picior (3-5 atingeri) inainte sa o paseze!
+                        is_offside_var_scen = (message.get("game_mode") == "scenarios" and message.get("active_scenario") == "OFFSIDE_VAR")
+                        if not is_offside_var_scen and open_space_ahead > 5.8 and closest_front_opp_dist > 3.0:
+                            if self.dribble_touches < 3:
+                                carry_momentum_bonus = 38.0
+                            elif self.dribble_touches < 5:
+                                carry_momentum_bonus = 18.0
                             else:
-                                # daca adversarul e pe jos, mergem mai departe
-                                if player_data["stun_frames"] > 0:
-                                    continue
-                                distance_agent_to_opponent = self.calculate_distance(player_data["x"], player_data["y"])
-                                if distance_agent_to_opponent < closest_opponent_distance:
-                                    closest_opponent_distance = distance_agent_to_opponent
-                                    closest_opponent_id = player_id
+                                carry_momentum_bonus = -15.0
+                        elif self.dribble_touches >= 6:
+                            carry_momentum_bonus = -25.0
+                        else:
+                            carry_momentum_bonus = 0.0
 
-                        # ===============================
-                        # CALCULAM SCORUL PENTRU DRIBLING
-                        # ===============================
-                        base_dribble_score = 58.0
-                        dribble_multiplier = 5.5
-
-                        # Calculam cati metri de culoar liber avem IN FATA spre poarta adversa
-                        attack_dir_drib = 1.0 if float(self.start_x) < 50.0 else -1.0
-                        goal_x_drib = 100.0 if attack_dir_drib > 0 else 0.0
-                        dist_to_goal_drib = math.hypot(goal_x_drib - self.x, 50.0 - self.y)
-                        open_space_ahead = 30.0
-                        for opp_id, opp_data in message["players"].items():
-                            if opp_data["team"] != self.team and opp_data["stun_frames"] == 0:
-                                # Ignoram portarul advers la calculul spatiului de patrundere pana la 13m
-                                if opp_data.get("role") == "GK" or str(opp_id) in ["1", "101"]:
-                                    continue
-                                dx_f = (opp_data["x"] - self.x) * attack_dir_drib
-                                dy_f = abs(opp_data["y"] - self.y)
-                                # Adversar aflat in conul nostru de avansare
-                                if dx_f > -1.0 and dy_f < 6.0:
-                                    dist_f = math.hypot(max(0.0, dx_f), dy_f)
-                                    if dist_f < open_space_ahead:
-                                        open_space_ahead = dist_f
-
-                        # 1. Bonus de spatiu deschis in teren (moderat, ca sa NU blocheze pasele pe culoar catre colegi!)
-                        open_lane_bonus = min(42.0, max(0.0, (open_space_ahead - 6.0) * 3.8)) if closest_opponent_distance > 3.2 else 0.0
-
-                        # 2. BONUS PATRUNDERE SPRE POARTA (1v1 / Breakaway intre 12.6m si 25.0m):
-                        # Daca jucatorul este la 12.6m-25m de poarta si are culoar liber in fata (> 4.5m fara fundas in fata),
-                        # il incurajam sa AVANSEZE cu mingea in careu (pana la ~11.5-12.6m) in loc sa suteze pripit de la 20m!
-                        if 12.6 < dist_to_goal_drib <= 25.0 and open_space_ahead > 4.5 and closest_opponent_distance > 3.2:
-                            box_drive_bonus = 52.0
+                        # 3. Bonus de patrundere spre careu (12.2m - 26.0m): cand avem culoar liber spre poarta, atacam careul!
+                        if 12.2 < dist_to_goal_drib <= 26.0 and open_space_ahead > 4.0 and closest_front_opp_dist > 2.6:
+                            box_drive_bonus = 48.0
                         else:
                             box_drive_bonus = 0.0
 
-                        dribble_score = base_dribble_score + min(68.0, closest_opponent_distance * dribble_multiplier) + open_lane_bonus + box_drive_bonus
+                        dribble_score = base_dribble_score + frontal_freedom_bonus + open_lane_bonus + carry_momentum_bonus + box_drive_bonus
 
                         # ==========================
                         # CALCULAM SCORUL PENTRU SUT
@@ -2083,7 +2234,7 @@ class PlayerAgent:
                             # ignoram portarul (portarul sta pe linia portii)
                             if opponent_data["start_x"] in [0, 100, 2.0, 98.0] or opponent_data.get("role") == "GK":
                                 continue
-                            if opponent_data["team"] != self.team and opponent_data["stun_frames"] == 0:
+                            if opponent_data["team"] != self.team:
 
                                 # vectorul de la noi la adversar
                                 dx_opp = opponent_data["x"] - self.x
@@ -2112,38 +2263,39 @@ class PlayerAgent:
                         # Penalizare pentru unghi inchis (cand jucatorul e prea in lateral fata de barele portii 41..59)
                         angle_penalty = max(0.0, (lateral_offset - 8.5) * 4.6)
 
-                        # Scor echilibrat pentru sut (incurajeaza apropierea de poarta sau pasa daca exista optiune mai buna):
-                        # 1. Zona ideala de finalizare in careu (<= 12.8m de centrul portii): sut letal!
-                        if dist_to_goal_center <= 12.8:
-                            kick_score = 230.0 + (12.8 - dist_to_goal_center) * 6.5 - shot_blocking_penalty - angle_penalty
-                        # 2. Interiorul careului (12.8m - 17.5m): sut bun daca nu mai avem spatiu de avansare si nici pasa mai clara
-                        elif dist_to_goal_center <= 17.5:
-                            kick_score = 185.0 - ((dist_to_goal_center - 12.8) * 5.0) - shot_blocking_penalty - angle_penalty
-                        # 3. Marginea careului (17.5m - 22.5m): sutam doar daca drumul e inchis si colegii sunt marcati
+                        # Scor echilibrat pentru sut (incurajeaza apropierea de poarta cand e spatiu si sutul decisiv cand avem culoar!):
+                        # 1. Zona ideala de finalizare in careu (<= 13.8m de centrul portii): sut letal!
+                        if dist_to_goal_center <= 13.8:
+                            kick_score = 242.0 + (13.8 - dist_to_goal_center) * 6.5 - shot_blocking_penalty - angle_penalty
+                        # 2. Interiorul careului (13.8m - 18.0m): sut foarte bun daca avem culoar sau nu mai putem inainta
+                        elif dist_to_goal_center <= 18.0:
+                            kick_score = 202.0 - ((dist_to_goal_center - 13.8) * 5.2) - shot_blocking_penalty - angle_penalty
+                        # 3. Marginea careului (18.0m - 22.5m): sutam daca avem culoar curat si optiunile de pasa/dribling sunt inchise
                         elif dist_to_goal_center <= 22.5:
-                            kick_score = 160.0 - ((dist_to_goal_center - 17.5) * 7.5) - shot_blocking_penalty - angle_penalty
-                        # 4. Peste 22.5m: construim faza prin pasa pe culoar sau avansare cu mingea
+                            kick_score = 172.0 - ((dist_to_goal_center - 18.0) * 7.5) - shot_blocking_penalty - angle_penalty
+                        # 4. Peste 22.5m: construim faza prin avansare cu mingea sau pasa pe culoar
                         else:
                             kick_score = -500.0
 
-                        # DECIZIA ECHILIBRATA: SUT VS PASA VS DRIBLING
-                        # - Sub 11.0m central sau sub 12.8m singur cu portarul -> SUT HOTARAT!
-                        # - Intre 13m si 22m: daca are spatiu liber in fata (open_space_ahead > 4.5m), va prefera sa AVANSEZE (dribble_score ~ 220 > kick_score)!
-                        # - Daca un coechipier este intr-o pozitie net superioara (has_superior_pass sau best_pass_is_true_tap_in), PASEAZA!
-                        is_point_blank = (dist_to_goal_center <= 11.0 and lateral_offset <= 10.0 and not has_shot_blocker)
+                        # DECIZIA ECHILIBRATA: SUT VS DRIBLING IN SPATIU LIBER VS PASA
+                        # - Sub 13.8m cu culoar liber spre poarta -> SUT HOTARAT (fara pase inutile in interiorul careului)!
+                        # - Intre 13.8m si 22m: daca are culoar liber in fata (open_space_ahead > 4.2m), AVANSEAZA in careu;
+                        #   daca e intampinat de fundas si are culoar de sut, SUTEAZA!
+                        is_point_blank = (dist_to_goal_center <= 12.2 and lateral_offset <= 11.0 and not has_shot_blocker)
                         is_clean_one_on_one = (
-                            lateral_offset <= 12.0
+                            lateral_offset <= 12.5
                             and not has_shot_blocker
                             and (
-                                dist_to_goal_center <= 12.8
-                                or (dist_to_goal_center <= 16.0 and (open_space_ahead < 4.5 or closest_opponent_distance < 3.5))
+                                dist_to_goal_center <= 13.8
+                                or (dist_to_goal_center <= 17.5 and (open_space_ahead < 4.2 or closest_front_opp_dist < 3.4))
                             )
                         )
-                        has_superior_pass = (best_pass_score > kick_score + 10.0 and dist_to_goal_center > 11.5)
+                        has_superior_pass = (best_pass_score > kick_score + 24.0 and dist_to_goal_center > 14.5)
                         is_best_action_shot = (kick_score > best_pass_score and kick_score > dribble_score)
 
                         if (is_point_blank or is_clean_one_on_one or is_best_action_shot) and not best_pass_is_true_tap_in and not has_superior_pass and dist_to_goal_center <= 22.5:
                             self.state = STATE_KICK
+                            self.dribble_touches = 0
                             self.last_passer_id = None
                             self.one_two_window_frames = 0
 
@@ -2169,9 +2321,10 @@ class PlayerAgent:
 
                             intention = self.prepare_kick(goal_x, actual_shot_y, power = shot_power, action_type = STATE_KICK)
 
-                        # Pasa
+                        # Pasa (cand un coleg este mai bine pozitionat / pe culoar sau cand nu mai avem spatiu de inaintare)
                         elif best_pass_score > dribble_score and best_pass_score > kick_score and best_pass_score > 20.0:
                             self.state = STATE_PASS
+                            self.dribble_touches = 0
                             self.ignore_ball_frames = 32
 
                             # Pregatim tinta de sprint "Un-Doi" (Give-and-Go): dupa ce pasam, atacam spatiul in fata!
@@ -2186,9 +2339,6 @@ class PlayerAgent:
                             self.give_and_go_y = max(10.0, min(90.0, self.y + y_shift))
                             
                             # Calibrarea fizica exacta a fortei pasei (compensarea frecarii 0.95/tick):
-                            # Cu frecarea 0.95, mingea parcurge distanta D = 20 * (V_initial - V_sosire).
-                            # Vrem ca mingea sa ajunga la coechipier cu o viteza ideala de preluare (~0.75 u/tick),
-                            # nici prea tare pentru pasele scurte, nici prea slaba pentru pasele lungi!
                             if best_pass_lead_distance > 0.0:
                                 pass_power = min(max(0.72 + best_pass_target_distance * 0.048, 1.05), 2.85)
                             else:
@@ -2202,21 +2352,24 @@ class PlayerAgent:
                                 
                         # Am decis sa pastram mingea: Dribling cursiv in spatiu liber sau Dribling sub presiune
                         else:
-                            # In careu la sub 13m sub presiune stransa, fara optiune buna de pasa: trage la poarta!
-                            if dist_to_goal_center <= 13.0 and lateral_offset <= 12.0 and closest_opponent_distance < 2.3 and best_pass_score < 130.0:
+                            # In careu la sub 14.5m sub presiune stransa, fara optiune buna de pasa: trage la poarta!
+                            if dist_to_goal_center <= 14.5 and lateral_offset <= 12.5 and closest_front_opp_dist < 2.5 and best_pass_score < 135.0:
                                 self.state = STATE_KICK
+                                self.dribble_touches = 0
                                 aim_corner_y = random.choice([random.uniform(43.0, 47.0), random.uniform(53.0, 57.0)])
                                 actual_shot_y = aim_corner_y + random.gauss(0.0, 2.0)
                                 shot_power = min(SHOT_POWER_MAX, max(SHOT_POWER_MIN, 2.4 + (dist_to_goal_center * 0.03)))
                                 intention = self.prepare_kick(goal_x, actual_shot_y, power = shot_power, action_type = STATE_KICK)
-                            # Sub presiune in teren deschis: protectia mingii si fentare rapida pe unghiul liber (0.36 < 0.56 viteza de alergare)
-                            elif closest_opponent_distance < 2.5:
+                            # Sub presiune FRONTALA stransa: protectia mingii si fentare rapida pe unghiul liber (0.36 < 0.56 viteza de alergare)
+                            elif closest_front_opp_dist < 2.3:
                                 self.state = STATE_DRIBBLE_DUEL
+                                self.dribble_touches += 1
                                 self.duel_frames = 3
                                 intention = self.prepare_kick(target_x, target_y, power = 0.36, action_type = STATE_DRIBBLE)
-                            # Liber: conducerea mingii lina in diagonala / slalom / cut-inside (0.48 < 0.56 viteza de alergare)
+                            # Liber in fata: conducerea mingii cursiva in diagonala / slalom / cut-inside (0.48 < 0.56 viteza de alergare)
                             else:
                                 self.state = STATE_DRIBBLE
+                                self.dribble_touches += 1
                                 intention = self.prepare_kick(target_x, target_y, power = 0.48, action_type = STATE_DRIBBLE)
                                     
                         # print(f"Sut: {kick_score}, Pasa: {best_pass_score}, Dribbling: {dribble_score}")

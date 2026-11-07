@@ -516,6 +516,18 @@ class GameVisualizer:
                 # scalam dimensiunea jucatorului (aerisire vizuala teren)
                 p_radius = max(5, int(7.5 * self.scale))
                 shadow_offset = max(1, int(3 * self.scale))
+                stun_frames = int(player_data.get("stun_frames", 0))
+                stun_type = str(player_data.get("stun_type", ""))
+                stun_mult = float(player_data.get("stun_speed_mult", 1.0))
+
+                # Daca jucatorul este incetinit / dezechilibrat dupa un tackle ratat sau o deposedare,
+                # inchidem usor nuanta tricoului si desenam un inel de avertizare galben-chihlimbar + indicator vizual!
+                if stun_frames > 0:
+                    player_color = (
+                        int(player_color[0] * 0.72),
+                        int(player_color[1] * 0.72),
+                        int(player_color[2] * 0.72)
+                    )
                 
                 # Umbra semi-transparenta
                 shadow_surf = pygame.Surface((p_radius * 2, p_radius * 2), pygame.SRCALPHA)
@@ -524,7 +536,17 @@ class GameVisualizer:
 
                 # 2. Jucatorul
                 pygame.draw.circle(self.screen, player_color, (draw_x, draw_y), p_radius)
-                pygame.draw.circle(self.screen, self.WHITE, (draw_x, draw_y), p_radius, max(1, int(1 * self.scale)))
+                if stun_frames > 0:
+                    ring_color = (255, 190, 0) if stun_type == "MISSED_TACKLE" else (255, 140, 60)
+                    pygame.draw.circle(self.screen, ring_color, (draw_x, draw_y), p_radius + max(1, int(1.5 * self.scale)), max(2, int(2 * self.scale)))
+                    # Eticheta compacta deasupra capului pentru feedback instantaneu ("TACKLE MISS -75%" / "LOST BALL")
+                    slow_pct = int(round((1.0 - stun_mult) * 100))
+                    badge_txt = f"MISS -{slow_pct}%" if stun_type == "MISSED_TACKLE" else f"SLOW -{slow_pct}%"
+                    tag_surf = self.small_font.render(badge_txt, True, ring_color)
+                    tag_rect = tag_surf.get_rect(center=(draw_x, draw_y - p_radius - max(7, int(8 * self.scale))))
+                    self.screen.blit(tag_surf, tag_rect)
+                else:
+                    pygame.draw.circle(self.screen, self.WHITE, (draw_x, draw_y), p_radius, max(1, int(1 * self.scale)))
 
 
                 # adaugare numar pe tricou

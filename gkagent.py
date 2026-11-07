@@ -52,7 +52,7 @@ class GoalkeeperAgent(PlayerAgent):
                 min_opp_dist = 99.0
                 lane_blocked = False
                 for opp_id, opp_data in message["players"].items():
-                    if opp_data["team"] != self.team and opp_data["stun_frames"] == 0:
+                    if opp_data["team"] != self.team:
                         d_opp = math.hypot(opp_data["x"] - p_data["x"], opp_data["y"] - p_data["y"])
                         if d_opp < min_opp_dist:
                             min_opp_dist = d_opp

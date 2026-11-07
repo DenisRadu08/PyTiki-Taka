@@ -135,6 +135,8 @@ class MatchEngine:
                             "y" : tunnel_y, 
                             "state" : STATE_IDLE,
                             "stun_frames" : 0,
+                            "stun_speed_mult" : 1.0,
+                            "stun_type" : "",
                             "team" : player_team,
                             "role" : STARTING_POSITIONS.get(agent_id_str, {}).get("role", "FIELD")
                         }
@@ -145,7 +147,7 @@ class MatchEngine:
                         self.router_socket.send_multipart([agent_identity, reply_bytes])
                         continue
 
-                    if str(intention["action"]) in [STATE_KICK, STATE_DRIBBLE, STATE_PASS, STATE_CONTROL_BALL, STATE_GK_CLEAR_BALL]: 
+                    if str(intention["action"]) in [STATE_KICK, STATE_DRIBBLE, STATE_PASS, STATE_CONTROL_BALL, STATE_GK_CLEAR_BALL] and self.players[agent_id_str]["stun_frames"] == 0: 
                         if self.game_status in [STATUS_PLAYING, STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_OFFSIDE]: 
 
                             # Nu permitem executia sutului daca arbitrul inca tine faza blocata pentru asezarea echipelor
@@ -226,18 +228,24 @@ class MatchEngine:
                 if self.game_status in [STATUS_SCENARIO_COUNTDOWN, STATUS_SCENARIO_DONE]:
                     break
 
-                # daca avem STUN, scadem un time frame si ramanem in IDLE
+                # Penalizare de viteza (dezechilibrare) dupa tackle ratat sau deposedare:
+                # Jucatorul NU mai ingheata pe loc! Continua sa alerge, dar incetinit proportional cu unghiul interventiei
+                # (-75% din spate -> 0.25x, -60% din fata -> 0.40x, -40% din lateral -> 0.60x).
                 if player_data["stun_frames"] > 0:
-                    player_data["state"] = STATE_IDLE
                     player_data["stun_frames"] -= 1
-                    continue
+                    speed_mult = float(player_data.get("stun_speed_mult", 0.35))
+                    if player_data["stun_frames"] == 0:
+                        player_data["stun_speed_mult"] = 1.0
+                        player_data["stun_type"] = ""
+                else:
+                    speed_mult = 1.0
 
                 # daca suntem in CHASE, fugim direct spre minge (viteza calibrata realist: 0.56 u/tick = ~16.8 m/s in joc)
                 if player_data["state"] in [STATE_CHASE, STATE_DRIBBLE, STATE_DRIBBLE_DUEL]:
                     if player_data["state"] == STATE_CHASE and str(player_id) == str(self.intended_receiver) and "target_x" in player_data and "target_y" in player_data:
-                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 0.56)
+                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 0.56 * speed_mult)
                     else:
-                        self.move_player_towards(player_data, self.ball["x"], self.ball["y"], speed = 0.56)
+                        self.move_player_towards(player_data, self.ball["x"], self.ball["y"], speed = 0.56 * speed_mult)
                 
                 # daca suntem in RESET, ne intoarcem la pozitia de incepere de pe teren (executantul merge la centrul terenului)
                 elif player_data["state"] == STATE_RESET:
@@ -263,12 +271,12 @@ class MatchEngine:
                 # daca suntem in ATTACK_SUPORT, agentul se demarca / sustine ofensiva (0.54 speed)
                 elif player_data["state"] == STATE_ATTACK_SUPPORT:
                     if "target_x" in player_data and "target_y" in player_data:
-                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 0.54)
+                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 0.54 * speed_mult)
                 
-                # daca suntem in DEFEND_SUPPORT, agentul se pozitioneaza in aparare (0.46 speed)
+                # daca suntem in DEFEND_SUPPORT, agentul se pozitioneaza rapid si compact in aparare (0.52 speed)
                 elif player_data["state"] == STATE_DEFEND_SUPPORT:
                     if "target_x" in player_data and "target_y" in player_data:
-                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 0.46)
+                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 0.52 * speed_mult)
                     
 
             if self.game_status == STATUS_GOAL and not self.goal_ball_centered:
@@ -471,8 +479,9 @@ class MatchEngine:
                         dist = 0.1
 
                     collision_diameter = PLAYER_COLLISION_DIAMETER
+                    tackle_reach = 2.05  # Raza reala la care un aparator poate intinde piciorul la minge pentru tackle
 
-                    # au intrat unul in altul?
+                    # 1. Separarea fizica a corpurilor daca au intrat unul in altul (< 1.4m)
                     if dist < collision_diameter:
                         # calculam suprapunerea
                         overlap = collision_diameter - dist
@@ -496,129 +505,151 @@ class MatchEngine:
                         p2["x"] -= (dx * push_back) + (tx * slide)
                         p2["y"] -= (dy * push_back) + (ty * slide)
 
-                        # Guard Clause pentru ca coechipierii sa nu 
-                        # incerce sa faca tackle intre ei
-                        if p1["team"] == p2["team"]:
-                            continue
+                    # Guard Clause pentru ca coechipierii sa nu incerce sa faca tackle intre ei
+                    if p1["team"] == p2["team"]:
+                        continue
 
-                        # MECANICA DE TACKLE
-                        if self.possession in [p1_id, p2_id]:
+                    # 2. MECANICA DE TACKLE SI INTERCEPTIE LA PICIOR (in raza de actiune de 2.05m):
+                    # Proportionala cu pozitionarea aparatorului (fata > lateral > spate) si cu aglomerarea defensiva!
+                    if dist < tackle_reach and self.possession in [p1_id, p2_id] and p1["stun_frames"] == 0 and p2["stun_frames"] == 0:
 
-                            if self.possession == p1_id:
-                                attacker_id, attacker, defender_id, defender = p1_id, p1, p2_id, p2
-                            else:
-                                 attacker_id, attacker, defender_id, defender = p2_id, p2, p1_id, p1
-                        
-                        # deposedarea poate avea loc daca fundasul il urmareste pe atacant
-                        # jucatorul de atac nu trebuie sa fie portarul
-                            if defender["state"] == STATE_CHASE and attacker["state"] not in [STATE_GK_HOLD_BALL, STATE_GK_CLEAR_BALL]:
-                                
-                                # viteza mingii pentru a vedea directia de atac
-                                vx = self.ball["velocity_x"]
-                                vy = self.ball["velocity_y"]
-                                speed = math.hypot(vx, vy)
+                        if self.possession == p1_id:
+                            attacker_id, attacker, defender_id, defender = p1_id, p1, p2_id, p2
+                        else:
+                            attacker_id, attacker, defender_id, defender = p2_id, p2, p1_id, p1
 
-                                # daca atacantul sta pe loc, e deposedare usoara
-                                # daca se misca in dribling (speed > 0.22), calculam unghiul
-                                if speed > 0.22:
-                                    # directia mingii pe axe
-                                    nx_ball = vx / speed
-                                    ny_ball = vy / speed
+                        def_dist_to_ball = self.calculate_distance(defender["x"], defender["y"], self.ball["x"], self.ball["y"])
+                        is_active_defender = defender["state"] in [STATE_CHASE, STATE_DEFEND_SUPPORT, STATE_IDLE]
 
-                                    # vectorul de impact fata de atacant
-                                    impact_dx = defender["x"] - attacker["x"]
-                                    impact_dy = defender["y"] - attacker["y"]
-                                    dist_impact = math.hypot(impact_dx, impact_dy)
+                        # Deposedarea poate avea loc daca aparatorul este in raza mingii (< 2.35m) si atacantul nu este portarul cu mingea in brate
+                        if is_active_defender and def_dist_to_ball < 2.35 and attacker["state"] not in [STATE_GK_HOLD_BALL, STATE_GK_CLEAR_BALL]:
+                            # Calculam cati aparatori aditionali inconjoara purtatorul mingii (pe o raza de 3.8m)
+                            # Daca atacantul intra intre 2-3 adversari, sansa de deposedare creste simtitor!
+                            extra_defenders = 0
+                            for other_id, other_p in self.players.items():
+                                if other_id != defender_id and other_p.get("team") == defender.get("team") and other_p.get("stun_frames", 0) == 0:
+                                    if self.calculate_distance(other_p["x"], other_p["y"], attacker["x"], attacker["y"]) < 3.8:
+                                        extra_defenders += 1
+                            crowding_bonus = min(0.28, extra_defenders * 0.13)
 
-                                    if dist_impact > 0:
-                                        # directia aparatorului pe axe
-                                        nx_def = impact_dx / dist_impact
-                                        ny_def = impact_dy / dist_impact
+                            # viteza mingii pentru a vedea directia de atac
+                            vx = self.ball["velocity_x"]
+                            vy = self.ball["velocity_y"]
+                            speed = math.hypot(vx, vy)
 
-                                        # aplicam produsul scalar
-                                        dot_product = (nx_ball * nx_def) + (ny_ball * ny_def)
+                            if speed > 0.22:
+                                # directia mingii pe axe
+                                nx_ball = vx / speed
+                                ny_ball = vy / speed
 
+                                # vectorul de impact fata de atacant
+                                impact_dx = defender["x"] - attacker["x"]
+                                impact_dy = defender["y"] - attacker["y"]
+                                dist_impact = math.hypot(impact_dx, impact_dy)
 
-                                        # cazul 1: vine din fata sau usor lateral
-                                        # sansa de deposedare creste cu cat e mai "in fata"
-                                        if dot_product > 0.0:
-                                            tackle_chance = 0.36 + dot_product * 0.45
-                                        
-                                        # cazul 2: vine din spate
-                                        # sansa de deposedare scade cu cat e mai "in spate"
-                                        else:
-                                            tackle_chance = 0.24 + dot_product * 0.18
+                                if dist_impact > 0:
+                                    # directia aparatorului pe axe
+                                    nx_def = impact_dx / dist_impact
+                                    ny_def = impact_dy / dist_impact
 
-                                        # TACKLE REUSIT => ATTACKER STUN & DEFENDER PREIA CONTROLUL CURAT AL MINGII
-                                        if random.random() < tackle_chance:
-                                            attacker["stun_frames"] = random.randint(10, 28)
-                                            attacker["state"] = STATE_IDLE
+                                    # aplicam produsul scalar (1.0 = direct in fata, 0.0 = lateral, -1.0 = direct in spate)
+                                    dot_product = (nx_ball * nx_def) + (ny_ball * ny_def)
 
-                                            # rezolvarea suprapunerii -> knockback
-                                            # impingem atacantul in spate ca efect al deposedarii
-                                            attacker["x"] -= nx_def * 1.8
-                                            attacker["y"] -= ny_def * 1.8
+                                    # Daca aparatorul e doar in DEFEND_SUPPORT (nu face CHASE activ), intervine doar daca atacantul vine spre el sau pe langa el
+                                    if defender["state"] != STATE_CHASE and dot_product < -0.15:
+                                        continue
 
-                                            # Aparatorul preia mingea la picior (fara ricoseu haotic in spate!)
-                                            self.ball["x"] = defender["x"]
-                                            self.ball["y"] = defender["y"]
-                                            self.ball["velocity_x"] = 0.0
-                                            self.ball["velocity_y"] = 0.0
-                                            self.last_touch = defender_id
-                                            self.possession = defender_id
-                                            self.intended_receiver = None
-                                            self.kicking_team = defender.get("team")
-                                            self.kick_action = None
-                                            print(f"Agentul {defender_id} a reusit tackle")
-                                        
-                                        # TACKLE RATAT => DEFENDER STUN
-                                        else:
-                                            # tackle ratat din fata => Stun mediu
-                                            if dot_product > 0.5:
-                                                stun = random.randint(16,25)
-                                            
-                                            # tackle ratat din corp la corp => Stun mic
-                                            elif dot_product >= -0.5:
-                                                stun = random.randint(5,15)
-
-                                            # tackle ratat din spate => Stun mare
-                                            else:
-                                                stun = random.randint(26,35)
-
-                                            defender["state"] = STATE_IDLE
-                                            defender["stun_frames"] = stun
-                                            print(f"Agentul {defender_id} NU a reusit tackle")
-                                else:
-                                    # Atacantul sta pe loc (speed <= 0.22) => deposedare din presiune imediata
-                                    impact_dx = defender["x"] - attacker["x"]
-                                    impact_dy = defender["y"] - attacker["y"]
-                                    dist_impact = math.hypot(impact_dx, impact_dy)
-                                    if dist_impact > 0:
-                                        nx_def = impact_dx / dist_impact
-                                        ny_def = impact_dy / dist_impact
+                                    # Sansa de deposedare calibrata proportional cu pozitia aparatorului:
+                                    # 1. Aparator plasat IN FATA (dot > 0.35): 60% - 82% sansa de recuperare!
+                                    if dot_product > 0.35:
+                                        tackle_chance = 0.48 + dot_product * 0.34 + crowding_bonus
+                                    # 2. Aparator plasat IN LATERAL / UMAR LA UMAR (-0.25 <= dot <= 0.35): 38% - 56% sansa!
+                                    elif dot_product >= -0.25:
+                                        tackle_chance = 0.44 + dot_product * 0.32 + crowding_bonus
+                                    # 3. Aparator care vine DIN SPATE (dot < -0.25): 16% - 30% sansa!
                                     else:
-                                        nx_def, ny_def = 1.0, 0.0
+                                        tackle_chance = max(0.16, 0.36 + dot_product * 0.22) + crowding_bonus * 0.6
 
-                                    tackle_chance = 0.55
+                                    # TACKLE REUSIT => ATTACKER DEZECHILIBRAT (-65% viteza) & DEFENDER PREIA CONTROLUL MINGII
                                     if random.random() < tackle_chance:
-                                        attacker["stun_frames"] = random.randint(8, 22)
-                                        attacker["state"] = STATE_IDLE
-                                        self.possession = defender_id
-                                        self.last_touch = defender_id
-                                        attacker["x"] -= nx_def * 1.6
-                                        attacker["y"] -= ny_def * 1.6
+                                        attacker["stun_frames"] = random.randint(16, 24)
+                                        attacker["stun_speed_mult"] = 0.35
+                                        attacker["stun_type"] = "DISPOSSESSED"
+
+                                        # rezolvarea suprapunerii -> knockback
+                                        attacker["x"] -= nx_def * 1.5
+                                        attacker["y"] -= ny_def * 1.5
+
+                                        # Aparatorul preia mingea la picior (fara ricoseu haotic in spate!)
                                         self.ball["x"] = defender["x"]
                                         self.ball["y"] = defender["y"]
                                         self.ball["velocity_x"] = 0.0
                                         self.ball["velocity_y"] = 0.0
+                                        self.last_touch = defender_id
+                                        self.possession = defender_id
                                         self.intended_receiver = None
                                         self.kicking_team = defender.get("team")
                                         self.kick_action = None
-                                        print(f"Agentul {defender_id} a deposedat atacantul oprit din cursa")
+                                        print(f"Agentul {defender_id} a reusit tackle (sansa {int(min(0.95, tackle_chance)*100)}%)")
+                                    
+                                    # TACKLE RATAT => DEFENDER INCETINIT PROPORTIONAL CU UNGHIUL (NU INGHETAT!)
                                     else:
-                                        defender["stun_frames"] = random.randint(8, 18)
-                                        defender["state"] = STATE_IDLE
-                                        print(f"Agentul {defender_id} a faultat usor sau a fost fentat")
+                                        # 1. Tackle ratat din fata (fentat pe directie): -60% viteza (0.40x)
+                                        if dot_product > 0.5:
+                                            stun = random.randint(18, 25)
+                                            slow_mult = 0.40
+                                        
+                                        # 2. Tackle ratat din lateral / umar la umar: -40% viteza (0.60x)
+                                        elif dot_product >= -0.5:
+                                            stun = random.randint(12, 18)
+                                            slow_mult = 0.60
+
+                                        # 3. Tackle ratat din spate (alunecare in gol): -75% viteza (0.25x)
+                                        else:
+                                            stun = random.randint(25, 34)
+                                            slow_mult = 0.25
+
+                                        defender["stun_frames"] = stun
+                                        defender["stun_speed_mult"] = slow_mult
+                                        defender["stun_type"] = "MISSED_TACKLE"
+                                        defender["x"] += nx_def * 0.85
+                                        defender["y"] += ny_def * 0.85
+                                        print(f"Agentul {defender_id} NU a reusit tackle (viteza redusa la {int(slow_mult*100)}%)")
+                            else:
+                                # Atacantul sta pe loc / controleaza scurt mingea (speed <= 0.22) => deposedare din presiune imediata
+                                impact_dx = defender["x"] - attacker["x"]
+                                impact_dy = defender["y"] - attacker["y"]
+                                dist_impact = math.hypot(impact_dx, impact_dy)
+                                if dist_impact > 0:
+                                    nx_def = impact_dx / dist_impact
+                                    ny_def = impact_dy / dist_impact
+                                else:
+                                    nx_def, ny_def = 1.0, 0.0
+
+                                tackle_chance = 0.62 + crowding_bonus
+                                if random.random() < tackle_chance:
+                                    attacker["stun_frames"] = random.randint(15, 22)
+                                    attacker["stun_speed_mult"] = 0.35
+                                    attacker["stun_type"] = "DISPOSSESSED"
+                                    self.possession = defender_id
+                                    self.last_touch = defender_id
+                                    attacker["x"] -= nx_def * 1.5
+                                    attacker["y"] -= ny_def * 1.5
+                                    self.ball["x"] = defender["x"]
+                                    self.ball["y"] = defender["y"]
+                                    self.ball["velocity_x"] = 0.0
+                                    self.ball["velocity_y"] = 0.0
+                                    self.intended_receiver = None
+                                    self.kicking_team = defender.get("team")
+                                    self.kick_action = None
+                                    print(f"Agentul {defender_id} a deposedat atacantul oprit din cursa")
+                                else:
+                                    defender["stun_frames"] = random.randint(14, 20)
+                                    defender["stun_speed_mult"] = 0.45
+                                    defender["stun_type"] = "MISSED_TACKLE"
+                                    defender["x"] += nx_def * 0.8
+                                    defender["y"] += ny_def * 0.8
+                                    print(f"Agentul {defender_id} a faultat usor sau a fost fentat")
 
             # ==================================================
             # ------------ SISTEMUL ANTI-COLLIDE ---------------
@@ -682,9 +713,10 @@ class MatchEngine:
 
             for player_id, player_data in self.players.items():
                 
-                # daca jucatorul a cazut la pamant, mingea trece peste el
-                # pentru a nu bloca driblingurile lansate pe langa el
-                if player_data["stun_frames"] > 0:
+                # Daca jucatorul abia a ratat un tackle sau a fost depasit in dribling (stun_frames > 0),
+                # nu blocheaza driblingul scurt al purtatorului de minge (STATE_DRIBBLE / STATE_CONTROL_BALL),
+                # DAR poate bloca / intercepta pasele sau suturile trimise direct prin el!
+                if player_data["stun_frames"] > 0 and self.kick_action in [STATE_DRIBBLE, STATE_CONTROL_BALL]:
                     continue
 
                 is_gk = (player_data.get("role") == "GK" or player_id in ["1", "101"])
@@ -712,10 +744,10 @@ class MatchEngine:
                         # INTERVENTIE PORTAR (SPECIALIZATA PENTRU REALISM FOTBAL)
                         # ========================================================
                         if is_gk:
-                            # Daca sutul este bine plasat la distanta de centrul portarului (> 1.38m) si puternic (>= 2.15),
-                            # mingea poate trece pe sub / pe langa varful manusilor direct in plasa (42% sansa de gol la colt)!
-                            if self.kick_action == STATE_KICK and ball_speed >= 2.15 and distance_to_ball > 1.38:
-                                if random.random() < 0.42:
+                            # Daca sutul este bine plasat la distanta de centrul portarului (> 1.42m) si puternic (>= 2.15),
+                            # mingea poate trece pe sub / pe langa varful manusilor direct in plasa (30% sansa de gol la colt)!
+                            if self.kick_action == STATE_KICK and ball_speed >= 2.15 and distance_to_ball > 1.42:
+                                if random.random() < 0.30:
                                     continue
 
                             self.offside_pending = False
