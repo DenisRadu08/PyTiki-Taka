@@ -95,20 +95,20 @@ STARTING_POSITIONS = {
 
 # DEAD BALL (OUT / CORNER / GOAL KICK)
 # viteza cu care se pozitioneaza jucatorii care asteapta (alergare tactica in careu / teren)
-WAIT_POSITIONING_SPEED = 0.70
+WAIT_POSITIONING_SPEED = 0.52
 # viteza executantului catre minge la faza fixa
-TAKER_POSITIONING_SPEED = 0.70
+TAKER_POSITIONING_SPEED = 0.52
 # fluier dinamic arbitrul: timp minim de asezare si timp maxim de siguranta (secunde)
 OUT_OF_PLAY_ROLL_SECONDS = 1.6       # cate secunde vedem mingea cum iese din teren (slow-motion) inainte sa fie pusa pe punct
 OFFSIDE_HOLD_SECONDS = 2.0           # cate secunde ramane afisata linia VAR de ofsaid inainte de asezarea mingii pentru lovitura libera indirecta
 GOAL_CELEBRATION_SECONDS = 3.5       # cate secunde ramane mingea in plasa portii dupa gol inainte de centrare
-RESTART_PREPARE_MIN_SECONDS = 3.2
-RESTART_PREPARE_MAX_SECONDS = 4.8
+RESTART_PREPARE_MIN_SECONDS = 3.6
+RESTART_PREPARE_MAX_SECONDS = 5.5
 RESTART_PREPARE_SECONDS = 3.0  # mentinut pentru compatibilitate
 
 # GOALKEEPING & DEFLECTIONS
 GK_SAVE_RADIUS = 2.05                # raza de plonjon / acoperire portar (echilibrata ca suturile plasate la colt sa fie gol)
-GK_DIVE_SPEED = 0.88                 # viteza de deplasare la plonjon (umana, permite finalizari clinice la 1v1)
+GK_DIVE_SPEED = 0.62                 # viteza de deplasare la plonjon (calibrata proportional cu noua viteza a jucatorilor 0.56)
 GK_CATCH_SPEED_THRESHOLD = 1.35      # suturi sub aceasta viteza sau pe centrul corpului sunt prinse direct
 GK_PARRY_CORNER_CHANCE = 0.50        # 50% sanse ca suturile tari sa fie deviate peste linia de fund in CORNER
 GK_PARRY_REBOUND_CHANCE = 0.30       # 30% sanse ca suturile tari sa fie respinse in fata portii (rebound)

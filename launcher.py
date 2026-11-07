@@ -45,8 +45,12 @@ def run_launcher():
 
         # Lansam exe-ul curent, dar ii spunem sa deschida visualizer-ul
         p = subprocess.Popen(get_command("--visualizer"))
-        p.wait() # Asteapta ca jocul sa se deschida inainte de a continua
-        root.destroy() # Opreste executia launcher.py
+        ret_code = p.wait() # Asteapta ca jocul sa se inchida
+        if ret_code == 42:
+            # Utilizatorul a apasat "MAIN MENU" in timpul jocului -> readucem meniul principal pe ecran!
+            root.deiconify()
+        else:
+            root.destroy() # Opreste executia launcher.py cand utilizatorul apasa QUIT / ESC
 
     def on_start_clicked():
         set_game_mode_and_launch("match")

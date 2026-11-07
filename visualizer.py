@@ -345,6 +345,12 @@ class GameVisualizer:
                             time.sleep(0.5) # Asteptam 500ms ca Windows-ul sa elibereze porturile ZMQ
                             self.engine_process = subprocess.Popen(get_command("--engine"))
                             
+                    elif hasattr(self, 'btn_menu') and self.btn_menu.collidepoint(mouse_pos):
+                        print("Revenim in Meniul Principal (Main Menu)...")
+                        self.stop_engine()
+                        pygame.quit()
+                        sys.exit(42)
+                        
                     elif hasattr(self, 'btn_quit') and self.btn_quit.collidepoint(mouse_pos):
                         print("Oprim jocul de tot...")
                         self.stop_engine()
@@ -735,6 +741,7 @@ class GameVisualizer:
             # 1. Definim zonele fizice ale butoanelor (pentru click si hover)
             self.btn_quit = pygame.Rect(screen_w - s_btn_w - pad, pad, s_btn_w, s_btn_h)
             self.btn_restart = pygame.Rect(screen_w - (2 * s_btn_w) - (2 * pad), pad, s_btn_w, s_btn_h)
+            self.btn_menu = pygame.Rect(screen_w - (3 * s_btn_w) - (3 * pad), pad, s_btn_w, s_btn_h)
             
             # 2. Citim pozitia curenta a mouse-ului
             mouse_pos = pygame.mouse.get_pos()
@@ -742,7 +749,8 @@ class GameVisualizer:
             # 3. Impachetam informatiile butoanelor intr-o lista pentru a scrie cod curat
             buttons_ui = [
                 (self.btn_quit, self.RED, "QUIT", self.btn_quit.collidepoint(mouse_pos)),
-                (self.btn_restart, self.BLUE, "RESTART", self.btn_restart.collidepoint(mouse_pos))
+                (self.btn_restart, self.BLUE, "RESTART", self.btn_restart.collidepoint(mouse_pos)),
+                (self.btn_menu, (210, 140, 0), "MAIN MENU", self.btn_menu.collidepoint(mouse_pos))
             ]
 
             # 4. Desenam fiecare buton in parte

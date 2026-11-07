@@ -229,24 +229,24 @@ class MatchEngine:
                     player_data["stun_frames"] -= 1
                     continue
 
-                # daca suntem in CHASE, fugim direct spre minge
+                # daca suntem in CHASE, fugim direct spre minge (viteza calibrata realist: 0.56 u/tick = ~16.8 m/s in joc)
                 if player_data["state"] in [STATE_CHASE, STATE_DRIBBLE, STATE_DRIBBLE_DUEL]:
                     if player_data["state"] == STATE_CHASE and str(player_id) == str(self.intended_receiver) and "target_x" in player_data and "target_y" in player_data:
-                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 0.85)
+                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 0.56)
                     else:
-                        self.move_player_towards(player_data, self.ball["x"], self.ball["y"], speed = 0.85)
+                        self.move_player_towards(player_data, self.ball["x"], self.ball["y"], speed = 0.56)
                 
-                # daca suntem in RESET, ne intoarcem la pozitia initiala de pe teren (1.0 speed)
+                # daca suntem in RESET, ne intoarcem la pozitia initiala de pe teren
                 elif player_data["state"] == STATE_RESET:
-                    self.move_player_towards(player_data, player_data["start_x"], player_data["start_y"], speed = 0.6)
+                    self.move_player_towards(player_data, player_data["start_x"], player_data["start_y"], speed = 0.48)
                 
-                # daca suntem in DO_THROW_IN, DO_CORNER, DO_GOAL_KICK sau DO_FREE_KICK, merge rapid spre a bate faza fixa (0.70 speed)
+                # daca suntem in DO_THROW_IN, DO_CORNER, DO_GOAL_KICK sau DO_FREE_KICK, merge spre a bate faza fixa
                 elif player_data["state"] in [STATE_DO_THROW_IN, STATE_DO_CORNER, STATE_DO_GOAL_KICK, STATE_DO_FREE_KICK]:
                     tx_take = self.restart_ball_x if not self.restart_ball_placed else self.ball["x"]
                     ty_take = self.restart_ball_y if not self.restart_ball_placed else self.ball["y"]
                     self.move_player_towards(player_data, tx_take, ty_take, speed = TAKER_POSITIONING_SPEED)
 
-                # daca suntem in WAIT_THROW_IN, WAIT_CORNER, WAIT_GOAL_KICK sau WAIT_FREE_KICK, ne asezam sprintat spre tinta primita de la agent
+                # daca suntem in WAIT_THROW_IN, WAIT_CORNER, WAIT_GOAL_KICK sau WAIT_FREE_KICK, ne asezam spre tinta primita de la agent
                 elif player_data["state"] in [STATE_WAIT_THROW_IN, STATE_WAIT_CORNER, STATE_WAIT_GOAL_KICK, STATE_WAIT_FREE_KICK]:
                     if "target_x" in player_data and "target_y" in player_data:
                         self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = WAIT_POSITIONING_SPEED)
@@ -256,15 +256,15 @@ class MatchEngine:
                     if "target_x" in player_data and "target_y" in player_data:
                         self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = GK_DIVE_SPEED)
 
-                # daca suntem in ATTACK_SUPORT, agentul sprinteaza pe demarcare / sustinere ofensiva (0.82 speed)
+                # daca suntem in ATTACK_SUPORT, agentul se demarca / sustine ofensiva (0.54 speed)
                 elif player_data["state"] == STATE_ATTACK_SUPPORT:
                     if "target_x" in player_data and "target_y" in player_data:
-                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 0.82)
+                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 0.54)
                 
-                # daca suntem in DEFEND_SUPPORT, agentul se pozitioneaza in aparare
+                # daca suntem in DEFEND_SUPPORT, agentul se pozitioneaza in aparare (0.46 speed)
                 elif player_data["state"] == STATE_DEFEND_SUPPORT:
                     if "target_x" in player_data and "target_y" in player_data:
-                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 0.7)
+                        self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = 0.46)
                     
 
             if self.game_status == STATUS_GOAL and not self.goal_ball_centered:
@@ -421,16 +421,16 @@ class MatchEngine:
                     if self.active_scenario == SCENARIO_GOAL_KICK and self.ball["x"] > 55.0:
                         self.scenario_end_timer = now_sc + 2.0
 
-                    # 4. Durata maxima a fazei active (suficient timp pentru combinatii si faza a doua)
+                    # 4. Durata maxima a fazei active (suficient timp pentru combinatii si faza a doua la noul ritm realist)
                     max_play_map = {
-                        SCENARIO_1V1_GK: 8.0,
-                        SCENARIO_CORNER: 11.5,
-                        SCENARIO_GOAL_KICK: 11.0,
-                        SCENARIO_THROW_IN: 11.0,
-                        SCENARIO_TIKI_TAKA: 12.5,
-                        SCENARIO_OFFSIDE_VAR: 12.0,
+                        SCENARIO_1V1_GK: 10.5,
+                        SCENARIO_CORNER: 13.5,
+                        SCENARIO_GOAL_KICK: 13.5,
+                        SCENARIO_THROW_IN: 13.0,
+                        SCENARIO_TIKI_TAKA: 15.0,
+                        SCENARIO_OFFSIDE_VAR: 14.0,
                     }
-                    max_dur = max_play_map.get(self.active_scenario, 10.5)
+                    max_dur = max_play_map.get(self.active_scenario, 13.0)
                     if self.scenario_play_start is not None and (now_sc - self.scenario_play_start) >= max_dur:
                         self.game_status = STATUS_SCENARIO_DONE
                         self.possession = None
@@ -507,8 +507,8 @@ class MatchEngine:
                                 speed = math.hypot(vx, vy)
 
                                 # daca atacantul sta pe loc, e deposedare usoara
-                                # daca se misca, calculam unghiul
-                                if speed > 0.5:
+                                # daca se misca in dribling (speed > 0.22), calculam unghiul
+                                if speed > 0.22:
                                     # directia mingii pe axe
                                     nx_ball = vx / speed
                                     ny_ball = vy / speed
@@ -530,29 +530,30 @@ class MatchEngine:
                                         # cazul 1: vine din fata sau usor lateral
                                         # sansa de deposedare creste cu cat e mai "in fata"
                                         if dot_product > 0.0:
-                                            tackle_chance = 0.4 + dot_product * 0.5
+                                            tackle_chance = 0.36 + dot_product * 0.45
                                         
                                         # cazul 2: vine din spate
                                         # sansa de deposedare scade cu cat e mai "in spate"
                                         else:
-                                            tackle_chance = 0.3 + dot_product * 0.2
+                                            tackle_chance = 0.24 + dot_product * 0.18
 
-                                        # TACKLE REUSIT => ATTACKER STUN
+                                        # TACKLE REUSIT => ATTACKER STUN & DEFENDER PREIA CONTROLUL CURAT AL MINGII
                                         if random.random() < tackle_chance:
-                                            attacker["stun_frames"] = random.randint(5,35)
+                                            attacker["stun_frames"] = random.randint(10, 28)
                                             attacker["state"] = STATE_IDLE
-                                            self.possession = defender_id
 
                                             # rezolvarea suprapunerii -> knockback
                                             # impingem atacantul in spate ca efect al deposedarii
-                                            attacker["x"] -= nx_def * 2.0
-                                            attacker["y"] -= ny_def * 2.0
+                                            attacker["x"] -= nx_def * 1.8
+                                            attacker["y"] -= ny_def * 1.8
 
-                                                # respingem mingea din piciorul atacantului
-                                            self.ball["velocity_x"] = nx_def * 1.0
-                                            self.ball["velocity_y"] = ny_def * 1.0
+                                            # Aparatorul preia mingea la picior (fara ricoseu haotic in spate!)
+                                            self.ball["x"] = defender["x"]
+                                            self.ball["y"] = defender["y"]
+                                            self.ball["velocity_x"] = 0.0
+                                            self.ball["velocity_y"] = 0.0
                                             self.last_touch = defender_id
-                                            self.possession = None
+                                            self.possession = defender_id
                                             self.intended_receiver = None
                                             self.kicking_team = defender.get("team")
                                             self.kick_action = None
@@ -576,7 +577,7 @@ class MatchEngine:
                                             defender["stun_frames"] = stun
                                             print(f"Agentul {defender_id} NU a reusit tackle")
                                 else:
-                                    # Atacantul sta pe loc sau se misca foarte lent (speed <= 0.5) => deposedare din presiune imediata
+                                    # Atacantul sta pe loc (speed <= 0.22) => deposedare din presiune imediata
                                     impact_dx = defender["x"] - attacker["x"]
                                     impact_dy = defender["y"] - attacker["y"]
                                     dist_impact = math.hypot(impact_dx, impact_dy)
@@ -586,16 +587,18 @@ class MatchEngine:
                                     else:
                                         nx_def, ny_def = 1.0, 0.0
 
-                                    tackle_chance = 0.70
+                                    tackle_chance = 0.55
                                     if random.random() < tackle_chance:
-                                        attacker["stun_frames"] = random.randint(5, 20)
+                                        attacker["stun_frames"] = random.randint(8, 22)
                                         attacker["state"] = STATE_IDLE
                                         self.possession = defender_id
                                         self.last_touch = defender_id
-                                        attacker["x"] -= nx_def * 1.5
-                                        attacker["y"] -= ny_def * 1.5
-                                        self.ball["velocity_x"] = nx_def * 0.8
-                                        self.ball["velocity_y"] = ny_def * 0.8
+                                        attacker["x"] -= nx_def * 1.6
+                                        attacker["y"] -= ny_def * 1.6
+                                        self.ball["x"] = defender["x"]
+                                        self.ball["y"] = defender["y"]
+                                        self.ball["velocity_x"] = 0.0
+                                        self.ball["velocity_y"] = 0.0
                                         self.intended_receiver = None
                                         self.kicking_team = defender.get("team")
                                         self.kick_action = None
@@ -619,9 +622,9 @@ class MatchEngine:
             self.ball['velocity_x'] *= 0.95
             self.ball['velocity_y'] *= 0.95
 
-            # Daca o pasa s-a oprit / a pierdut elanul (viteza sub 0.3), mingea devine libera pentru oricine
+            # Daca o pasa s-a oprit / a pierdut elanul (viteza sub 0.18), mingea devine libera pentru oricine
             ball_current_speed = math.hypot(self.ball['velocity_x'], self.ball['velocity_y'])
-            if self.intended_receiver is not None and ball_current_speed < 0.3:
+            if self.intended_receiver is not None and ball_current_speed < 0.18:
                 self.intended_receiver = None
                 self.offside_pending = False
 
