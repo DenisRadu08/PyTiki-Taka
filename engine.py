@@ -41,6 +41,7 @@ class MatchEngine:
         self.intended_receiver = None
         # Echipa care incepe de la mijloc
         self.kickoff_team = random.choice(["A", "B"])
+        self.kickoff_pending = False
         # Goluri
         self.score_A = 0
         self.score_B = 0
@@ -168,6 +169,8 @@ class MatchEngine:
                                     self.kicking_team = self.players[agent_id_str]["team"]
                                     self.kick_action = str(intention["action"])
                                     self.offside_pending = False
+                                    if self.kickoff_pending and str(intention["action"]) in [STATE_PASS, STATE_KICK]:
+                                        self.kickoff_pending = False
 
                                     if "target_agent_id" in intention and intention["target_agent_id"] is not None:
                                         self.intended_receiver = str(intention["target_agent_id"])
@@ -236,9 +239,10 @@ class MatchEngine:
                     else:
                         self.move_player_towards(player_data, self.ball["x"], self.ball["y"], speed = 0.56)
                 
-                # daca suntem in RESET, ne intoarcem la pozitia initiala de pe teren
+                # daca suntem in RESET, ne intoarcem la pozitia de incepere de pe teren (executantul merge la centrul terenului)
                 elif player_data["state"] == STATE_RESET:
-                    self.move_player_towards(player_data, player_data["start_x"], player_data["start_y"], speed = 0.48)
+                    kx, ky = self.get_kickoff_setup_pos(player_id, player_data)
+                    self.move_player_towards(player_data, kx, ky, speed = 0.48)
                 
                 # daca suntem in DO_THROW_IN, DO_CORNER, DO_GOAL_KICK sau DO_FREE_KICK, merge spre a bate faza fixa
                 elif player_data["state"] in [STATE_DO_THROW_IN, STATE_DO_CORNER, STATE_DO_GOAL_KICK, STATE_DO_FREE_KICK]:
@@ -326,6 +330,14 @@ class MatchEngine:
                     self.active_scenario = None
                     self.game_status = STATUS_SCENARIO_DONE
                 elif self.game_mode != "scenarios" and self.goal_ball_centered and self.are_players_ready():
+                    taker_id = "10" if self.kickoff_team == "A" else "110"
+                    if taker_id in self.players:
+                        self.players[taker_id]["x"] = 49.6 if self.kickoff_team == "A" else 50.4
+                        self.players[taker_id]["y"] = 50.0
+                    self.possession = taker_id
+                    self.last_touch = taker_id
+                    self.kicking_team = self.kickoff_team
+                    self.kickoff_pending = True
                     self.game_status = STATUS_PLAYING
                     
                     # pornim ceasul doar la primul fluier de start
@@ -964,6 +976,7 @@ class MatchEngine:
                 "last_touch" : self.last_touch,
                 "possession" : self.possession,
                 "kickoff_team" : self.kickoff_team,
+                "kickoff_pending" : self.kickoff_pending,
                 "intended_receiver" : self.intended_receiver,
                 "score_A" : self.score_A,
                 "score_B" : self.score_B,
@@ -1005,6 +1018,7 @@ class MatchEngine:
         self.offside_line_x = None
         self.intended_receiver = None
         self.kick_action = None
+        self.kickoff_pending = False
         self.goal_ball_centered = True
         self.restart_ready = True
         self.restart_ball_placed = True
@@ -1291,21 +1305,45 @@ class MatchEngine:
             player_data["x"] = target_x
             player_data["y"] = target_y
 
+    def get_kickoff_setup_pos(self, player_id, player_data):
+        """
+        Calculeaza pozitia de asezare pentru lovitura de incepere (Kick-Off):
+        - Un singur jucator din echipa care are lovitura de incepere (#10 pentru A, #110 pentru B)
+          merge direct pe centrul terenului (50, 50) langa minge!
+        - Mijlocasul central (#7 pentru A, #106 pentru B) se asaza in spatele cercului central
+          pregatit sa primeasca pasa inapoi!
+        - Toti ceilalti jucatori merg pe pozitiile lor de start, in propria jumatate.
+        """
+        pid = str(player_id)
+        if self.kickoff_team == "A":
+            if pid == "10":
+                return 49.6, 50.0
+            elif pid == "7":
+                return 37.0, 50.0
+        elif self.kickoff_team == "B":
+            if pid == "110":
+                return 50.4, 50.0
+            elif pid == "106":
+                return 63.0, 52.0
+        return float(player_data["start_x"]), float(player_data["start_y"])
+
     def are_players_ready(self):
         # daca nu avem destui jucatori conectati, nu suntem gata
         if len(self.players) < NUM_OF_PLAYERS:
             return False
 
-        # verificam fizic fiecare jucator
-        for p in self.players.values():
-            dx = p["x"] - p["start_x"]
-            dy = p["y"] - p["start_y"]
+        taker_id = "10" if self.kickoff_team == "A" else "110"
+        # verificam fizic fiecare jucator fata de pozitia sa de Kick-Off
+        for pid, p in self.players.items():
+            kx, ky = self.get_kickoff_setup_pos(pid, p)
+            dx = p["x"] - kx
+            dy = p["y"] - ky
 
             distance = math.hypot(dx, dy)
 
-            # daca un singur jucator e la distanta de >=2, nu e gata, deci
-            # meciul nu incepe
-            if distance >= 5.0:
+            # Executantul loviturii de incepere trebuie sa ajunga chiar langa minge la centru (< 2.5m, dupa ce s-a apropiat la < 0.8m)
+            threshold = 2.5 if str(pid) == taker_id else 5.0
+            if distance >= threshold:
                 return False
 
         # toti sunt la pozitiile lor!

@@ -852,8 +852,14 @@ class PlayerAgent:
                 # (MOMENTAN) print(f"Agentul {self.agent_id} (X: {self.x:.2f}, Y: {self.y:.2f}) vede mingea la Coordonatele {message['ball']['x']}, {message['ball']['y']}")
                 # ---------------DEBUG CONSOLA-----------------
                 
-                # verificam cine incepe de la mijloc
-                is_opponent_kickoff = (str(self.team) != str(message.get("kickoff_team")) and message["ball"]["x"] == 50.0 and message["ball"]["y"] == 50.0)
+                # verificam cine incepe de la mijloc (adversarii nu au voie sa atace mingea pana nu se executa pasa de Kick-Off)
+                is_opponent_kickoff = (
+                    str(self.team) != str(message.get("kickoff_team"))
+                    and (
+                        (message["ball"]["x"] == 50.0 and message["ball"]["y"] == 50.0)
+                        or message.get("kickoff_pending", False)
+                    )
+                )
 
                 # Verificam cine are posesia
                 team_in_possession = None
@@ -940,7 +946,20 @@ class PlayerAgent:
                 # INCEPE MECIUL (START_GAME) SAU S-A INSCRIS UN GOL (GOAL)
                 # ========================================================
                 if message["game_status"] in [STATUS_START_GAME, STATUS_GOAL]:
-                    intention = self.player_in_position(target_x = self.start_x, target_y = self.start_y, position = "POS_STARTGAME")
+                    ko_team = str(message.get("kickoff_team", "A"))
+                    aid_str = str(self.agent_id)
+                    if ko_team == "A" and aid_str == "10":
+                        ko_tx, ko_ty = 49.6, 50.0
+                    elif ko_team == "A" and aid_str == "7":
+                        ko_tx, ko_ty = 37.0, 50.0
+                    elif ko_team == "B" and aid_str == "110":
+                        ko_tx, ko_ty = 50.4, 50.0
+                    elif ko_team == "B" and aid_str == "106":
+                        ko_tx, ko_ty = 63.0, 52.0
+                    else:
+                        ko_tx, ko_ty = self.start_x, self.start_y
+
+                    intention = self.player_in_position(target_x = ko_tx, target_y = ko_ty, position = "POS_STARTGAME")
                     if intention is not None:
                         self.dealer_socket.send_json(intention)
 
@@ -1309,6 +1328,32 @@ class PlayerAgent:
                     # GUARD CLAUSE pentru stun
                     if self.stun_frames > 0:
                         pass
+
+                    # EXECUTIA REALISTA A LOVITURII DE INCEPERE (KICK-OFF):
+                    # Jucatorul desemnat (#10 pentru A sau #110 pentru B) aflat deja langa minge la (50, 50)
+                    # paseaza in spate catre un mijlocas coechipier, de unde incepe constructia fazei!
+                    elif message.get("kickoff_pending", False) and str(message.get("possession")) == str(self.agent_id):
+                        preferred_ids = ["7", "6", "8"] if self.team == "A" else ["106", "107", "108", "109"]
+                        avail_recs = [pid for pid in preferred_ids if pid in message["players"]]
+                        if avail_recs:
+                            rec_id = avail_recs[0] if random.random() < 0.72 else random.choice(avail_recs)
+                            rec_data = message["players"][rec_id]
+                            tx_ko, ty_ko = rec_data["x"], rec_data["y"]
+                        else:
+                            rec_id = None
+                            tx_ko = 37.0 if self.team == "A" else 63.0
+                            ty_ko = 50.0
+
+                        d_ko = math.hypot(tx_ko - self.x, ty_ko - self.y)
+                        ko_power = min(max(0.82 + d_ko * 0.052, 1.25), 2.10)
+                        self.state = STATE_PASS
+                        self.ignore_ball_frames = 24
+                        self.give_and_go_x = 55.0 if self.team == "A" else 45.0
+                        self.give_and_go_y = 50.0 + random.uniform(-6.0, 6.0)
+                        intention = self.prepare_kick(tx_ko, ty_ko, power = ko_power, action_type = STATE_PASS)
+                        if rec_id is not None:
+                            intention["target_agent_id"] = str(rec_id)
+                        self.dealer_socket.send_json(intention)
 
                     # E IN FAZA FIXA SI A FOST EXECUTATA => TRECE IN IDLE 
                     elif self.state in [STATE_DO_THROW_IN, STATE_WAIT_THROW_IN, STATE_DO_CORNER, STATE_WAIT_CORNER, STATE_DO_GOAL_KICK, STATE_WAIT_GOAL_KICK, STATE_DO_FREE_KICK, STATE_WAIT_FREE_KICK]:
@@ -2220,7 +2265,7 @@ class PlayerAgent:
         return intention
 
     def player_in_position(self, target_x, target_y, position):
-        if self.calculate_distance(target_x, target_y) < 2.0:
+        if self.calculate_distance(target_x, target_y) < 0.8:
             if self.state != STATE_IDLE:
                 self.state = STATE_IDLE
                 intention = {
