@@ -63,6 +63,13 @@ class MatchEngine:
         self.offside_spot_x = 50.0
         self.offside_spot_y = 50.0
         self.offside_defending_team = None
+        # Sistemul Arbitru FIFA pentru Faulturi, Lovituri Libere Directe si Penalty-uri (11m)
+        self.foul_spot_x = 50.0
+        self.foul_spot_y = 50.0
+        self.foul_attacking_team = None
+        self.foul_defending_team = None
+        self.foul_cooldown_frames = 0
+        self.last_set_piece_status = None
         # Modul de joc ("match" = 90 min, "scenarios" = Tactical Scenarios Lab)
         self.game_mode = "match"
         self.active_scenario = None
@@ -148,10 +155,10 @@ class MatchEngine:
                         continue
 
                     if str(intention["action"]) in [STATE_KICK, STATE_DRIBBLE, STATE_PASS, STATE_CONTROL_BALL, STATE_GK_CLEAR_BALL] and self.players[agent_id_str]["stun_frames"] == 0: 
-                        if self.game_status in [STATUS_PLAYING, STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_OFFSIDE]: 
+                        if self.game_status in [STATUS_PLAYING, STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_OFFSIDE, STATUS_FREE_KICK, STATUS_PENALTY]: 
 
                             # Nu permitem executia sutului daca arbitrul inca tine faza blocata pentru asezarea echipelor
-                            if self.game_status in [STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_OFFSIDE] and (not self.restart_ready or not self.restart_ball_placed):
+                            if self.game_status in [STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_OFFSIDE, STATUS_FREE_KICK, STATUS_PENALTY] and (not self.restart_ready or not self.restart_ball_placed):
                                 pass
                             else:
                                 # extragem pozitia reala a jucatorului din mintea Serverului
@@ -164,6 +171,10 @@ class MatchEngine:
                                 # permitem sutul doar daca agentul e fizic langa minge (2.5m in joc deschis, 5.0m la faze fixe)
                                 max_kick_dist = 2.5 if self.game_status == STATUS_PLAYING else 5.0
                                 if distance_to_ball < max_kick_dist:
+                                    if self.game_status in [STATUS_FREE_KICK, STATUS_PENALTY, STATUS_CORNER, STATUS_OUT, STATUS_GOAL_KICK, STATUS_OFFSIDE]:
+                                        self.last_set_piece_status = self.game_status
+                                    else:
+                                        self.last_set_piece_status = None
                                     self.ball["velocity_x"] = float(intention["kick_vx"])
                                     self.ball["velocity_y"] = float(intention["kick_vy"])
                                     self.last_touch = intention["agent_id"] 
@@ -252,14 +263,14 @@ class MatchEngine:
                     kx, ky = self.get_kickoff_setup_pos(player_id, player_data)
                     self.move_player_towards(player_data, kx, ky, speed = 0.48)
                 
-                # daca suntem in DO_THROW_IN, DO_CORNER, DO_GOAL_KICK sau DO_FREE_KICK, merge spre a bate faza fixa
-                elif player_data["state"] in [STATE_DO_THROW_IN, STATE_DO_CORNER, STATE_DO_GOAL_KICK, STATE_DO_FREE_KICK]:
+                # daca suntem in DO_THROW_IN, DO_CORNER, DO_GOAL_KICK, DO_FREE_KICK sau DO_PENALTY, merge spre a bate faza fixa
+                elif player_data["state"] in [STATE_DO_THROW_IN, STATE_DO_CORNER, STATE_DO_GOAL_KICK, STATE_DO_FREE_KICK, STATE_DO_PENALTY]:
                     tx_take = self.restart_ball_x if not self.restart_ball_placed else self.ball["x"]
                     ty_take = self.restart_ball_y if not self.restart_ball_placed else self.ball["y"]
                     self.move_player_towards(player_data, tx_take, ty_take, speed = TAKER_POSITIONING_SPEED)
 
-                # daca suntem in WAIT_THROW_IN, WAIT_CORNER, WAIT_GOAL_KICK sau WAIT_FREE_KICK, ne asezam spre tinta primita de la agent
-                elif player_data["state"] in [STATE_WAIT_THROW_IN, STATE_WAIT_CORNER, STATE_WAIT_GOAL_KICK, STATE_WAIT_FREE_KICK]:
+                # daca suntem in WAIT_THROW_IN, WAIT_CORNER, WAIT_GOAL_KICK, WAIT_FREE_KICK sau WAIT_PENALTY, ne asezam spre tinta primita de la agent
+                elif player_data["state"] in [STATE_WAIT_THROW_IN, STATE_WAIT_CORNER, STATE_WAIT_GOAL_KICK, STATE_WAIT_FREE_KICK, STATE_WAIT_PENALTY]:
                     if "target_x" in player_data and "target_y" in player_data:
                         self.move_player_towards(player_data, player_data["target_x"], player_data["target_y"], speed = WAIT_POSITIONING_SPEED)
 
@@ -352,10 +363,15 @@ class MatchEngine:
                     if self.start_time is None:
                         self.start_time = time.time()
 
-            if self.game_status in [STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_OFFSIDE]:
-                # 0. Rulare vizuala slow-motion a mingii (sau afisare linia VAR la OFSAID) inainte de asezarea pe punct
+            if self.game_status in [STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_OFFSIDE, STATUS_FREE_KICK, STATUS_PENALTY]:
+                # 0. Rulare vizuala slow-motion a mingii (sau afisare linia VAR la OFSAID / marcaj FAULT) inainte de asezarea pe punct
                 if not self.restart_ball_placed:
-                    hold_duration = OFFSIDE_HOLD_SECONDS if self.game_status == STATUS_OFFSIDE else OUT_OF_PLAY_ROLL_SECONDS
+                    if self.game_status == STATUS_OFFSIDE:
+                        hold_duration = OFFSIDE_HOLD_SECONDS
+                    elif self.game_status in [STATUS_FREE_KICK, STATUS_PENALTY]:
+                        hold_duration = FOUL_HOLD_SECONDS
+                    else:
+                        hold_duration = OUT_OF_PLAY_ROLL_SECONDS
                     if self.restart_start_time is not None and (time.time() - self.restart_start_time) < hold_duration:
                         self.ball["velocity_x"] *= 0.85
                         self.ball["velocity_y"] *= 0.85
@@ -363,8 +379,8 @@ class MatchEngine:
                         self.ball["y"] = max(-2.8, min(102.8, self.ball["y"]))
                     else:
                         # In modul TACTICAL SCENARIOS, daca mingea a iesit in afara terenului (aut/corner/aut de poarta),
-                        # faza curenta s-a incheiat — nu mai continuam cu un meci intreg!
-                        if self.game_mode == "scenarios" and self.game_status != STATUS_OFFSIDE:
+                        # faza curenta s-a incheiat — dar la OFSAID, FREE_KICK sau PENALTY asezam mingea ca sa vedem executia!
+                        if self.game_mode == "scenarios" and self.game_status not in [STATUS_OFFSIDE, STATUS_FREE_KICK, STATUS_PENALTY]:
                             self.ball["velocity_x"] = 0.0
                             self.ball["velocity_y"] = 0.0
                             self.game_status = STATUS_SCENARIO_DONE
@@ -378,16 +394,17 @@ class MatchEngine:
                 if self.restart_ball_placed and not self.restart_ready:
                     if self.restart_start_time is not None:
                         elapsed = time.time() - self.restart_start_time
-                        # 1. Timp minim de asezare tactica
-                        if elapsed >= RESTART_PREPARE_MIN_SECONDS:
+                        # 1. Timp minim de asezare tactica (4.2s la lovituri libere / penalty ca zidul sa fie complet aliniat!)
+                        min_prep_time = 4.2 if self.game_status in [STATUS_FREE_KICK, STATUS_PENALTY] else RESTART_PREPARE_MIN_SECONDS
+                        if elapsed >= min_prep_time:
                             # 2. Verificam daca executantul a ajuns la minge
                             taker_at_ball = False
                             for p_id, p in self.players.items():
-                                if p["state"] in [STATE_DO_THROW_IN, STATE_DO_CORNER, STATE_DO_GOAL_KICK, STATE_DO_FREE_KICK]:
+                                if p["state"] in [STATE_DO_THROW_IN, STATE_DO_CORNER, STATE_DO_GOAL_KICK, STATE_DO_FREE_KICK, STATE_DO_PENALTY]:
                                     if self.calculate_distance(p["x"], p["y"], self.ball["x"], self.ball["y"]) < 2.5:
                                         taker_at_ball = True
                                         break
-                            # Daca executantul este la minge SAU a trecut timpul maxim de siguranta (4.5s)
+                            # Daca executantul este la minge SAU a trecut timpul maxim de siguranta (5.5s)
                             if taker_at_ball or elapsed >= RESTART_PREPARE_MAX_SECONDS:
                                 self.restart_ready = True
                     else:
@@ -432,8 +449,8 @@ class MatchEngine:
                         elif self.active_scenario != SCENARIO_OFFSIDE_VAR:
                             self.scenario_end_timer = now_sc + 3.8
 
-                    # 2. La 1v1 GK: daca atacantul a sutat la poarta si mingea s-a oprit complet
-                    if self.active_scenario == SCENARIO_1V1_GK and self.kick_action == STATE_KICK:
+                    # 2. La 1v1 GK sau PENALTY: daca atacantul a sutat la poarta si mingea s-a oprit complet
+                    if self.active_scenario in [SCENARIO_1V1_GK, SCENARIO_PENALTY] and self.kick_action == STATE_KICK:
                         if math.hypot(self.ball["velocity_x"], self.ball["velocity_y"]) < 0.20:
                             self.scenario_end_timer = now_sc + 1.5
 
@@ -444,6 +461,8 @@ class MatchEngine:
                     # 4. Durata maxima a fazei active (suficient timp pentru combinatii si faza a doua la noul ritm realist)
                     max_play_map = {
                         SCENARIO_1V1_GK: 10.5,
+                        SCENARIO_PENALTY: 8.5,
+                        SCENARIO_FREE_KICK: 12.5,
                         SCENARIO_CORNER: 13.5,
                         SCENARIO_GOAL_KICK: 13.5,
                         SCENARIO_THROW_IN: 13.0,
@@ -455,6 +474,10 @@ class MatchEngine:
                         self.game_status = STATUS_SCENARIO_DONE
                         self.possession = None
                         self.intended_receiver = None
+
+            # Decrementam cooldown-ul dintre faulturi pentru a pastra fluenta jocului
+            if self.foul_cooldown_frames > 0:
+                self.foul_cooldown_frames -= 1
 
             # ===========================================
             # --------- SISTEMUL ANTI-COLLIDE -----------
@@ -594,20 +617,28 @@ class MatchEngine:
                                     
                                     # TACKLE RATAT => DEFENDER INCETINIT PROPORTIONAL CU UNGHIUL (NU INGHETAT!)
                                     else:
-                                        # 1. Tackle ratat din fata (fentat pe directie): -60% viteza (0.40x)
+                                        # 1. Tackle ratat din fata (fentat pe directie): -60% viteza (0.40x), risc minim de fault (1.0%)
                                         if dot_product > 0.5:
                                             stun = random.randint(18, 25)
                                             slow_mult = 0.40
+                                            foul_prob = 0.010
                                         
-                                        # 2. Tackle ratat din lateral / umar la umar: -40% viteza (0.60x)
+                                        # 2. Tackle ratat din lateral / umar la umar: -40% viteza (0.60x), risc mic de fault (2.5%)
                                         elif dot_product >= -0.5:
                                             stun = random.randint(12, 18)
                                             slow_mult = 0.60
+                                            foul_prob = 0.025
 
-                                        # 3. Tackle ratat din spate (alunecare in gol): -75% viteza (0.25x)
+                                        # 3. Tackle ratat din spate (alunecare in gol): -75% viteza (0.25x), risc mai ridicat de fault (8.0%)
                                         else:
                                             stun = random.randint(25, 34)
                                             slow_mult = 0.25
+                                            foul_prob = 0.080
+
+                                        # Verificam daca interventia ratata a produs FAULT (doar in joc deschis si cu cooldown intre faulturi!)
+                                        if self.game_status == STATUS_PLAYING and self.game_mode != "scenarios" and self.foul_cooldown_frames == 0 and random.random() < foul_prob:
+                                            self.trigger_foul(attacker_id, attacker, defender_id, defender)
+                                            break
 
                                         defender["stun_frames"] = stun
                                         defender["stun_speed_mult"] = slow_mult
@@ -644,6 +675,9 @@ class MatchEngine:
                                     self.kick_action = None
                                     print(f"Agentul {defender_id} a deposedat atacantul oprit din cursa")
                                 else:
+                                    if self.game_status == STATUS_PLAYING and self.game_mode != "scenarios" and self.foul_cooldown_frames == 0 and random.random() < 0.022:
+                                        self.trigger_foul(attacker_id, attacker, defender_id, defender)
+                                        break
                                     defender["stun_frames"] = random.randint(14, 20)
                                     defender["stun_speed_mult"] = 0.45
                                     defender["stun_type"] = "MISSED_TACKLE"
@@ -836,6 +870,14 @@ class MatchEngine:
 
                             # 2. Interventie adversar:
                             else:
+                                # Daca sutul provine dintr-o LOVITURA LIBERA DIRECTA (STATUS_FREE_KICK),
+                                # mingea este lovita cu efect PESTE ZID (traiectorie inalta in primii 11.5m),
+                                # deci zidul blocheaza mingea doar daca trece foarte aproape de centrul unui jucator (< 0.62m) si nu sare peste!
+                                if self.last_set_piece_status == STATUS_FREE_KICK and self.kick_action == STATE_KICK:
+                                    dist_from_fk = self.calculate_distance(player_data["x"], player_data["y"], self.restart_ball_x, self.restart_ball_y)
+                                    if dist_from_fk < 11.5 and (distance_to_ball > 0.62 or random.random() < 0.65):
+                                        continue
+
                                 self.offside_pending = False
                                 # A. Blocaj defensiv la SUT puternic pe poarta (STATE_KICK, viteza >= 2.2) => Ricoseu / Deviere
                                 if self.kick_action == STATE_KICK and ball_speed >= 2.2:
@@ -1021,6 +1063,10 @@ class MatchEngine:
                 "offside_spot_x" : self.offside_spot_x,
                 "offside_spot_y" : self.offside_spot_y,
                 "offside_defending_team" : self.offside_defending_team,
+                "foul_spot_x" : self.foul_spot_x,
+                "foul_spot_y" : self.foul_spot_y,
+                "foul_attacking_team" : self.foul_attacking_team,
+                "foul_defending_team" : self.foul_defending_team,
                 "game_mode" : self.game_mode,
                 "active_scenario" : self.active_scenario,
                 "scenario_countdown_left" : self.scenario_countdown_left
@@ -1305,6 +1351,154 @@ class MatchEngine:
             self.possession = None
             self.last_touch = "105"    # Ultima atingere B -> Aut pentru A!
             self.kicking_team = "A"
+
+        # =====================================================================
+        # 7. PENALTY (11M): Lovitura de la 11m pentru Echipa Rosii (#10 vs #101)
+        # =====================================================================
+        elif scenario_name == SCENARIO_PENALTY:
+            self.scenario_post_status = STATUS_PENALTY
+            self.foul_attacking_team = "A"
+            self.foul_defending_team = "B"
+            self.foul_spot_x = 90.0
+            self.foul_spot_y = 50.0
+
+            set_pos("1", 4.0, 50.0)
+            set_pos("2", 52.0, 72.0)
+            set_pos("3", 50.0, 55.0)
+            set_pos("4", 50.0, 45.0)
+            set_pos("5", 52.0, 28.0)
+            # Jucatorii de camp aliniati regulamentar in afara careului de 16m si a semicercului (x < 85.0)
+            set_pos("6", 83.5, 65.0)
+            set_pos("7", 79.5, 52.0)
+            set_pos("8", 82.0, 40.0)
+            set_pos("9", 85.0, 72.0)
+            set_pos("11", 85.0, 28.0)
+            set_pos("10", 88.2, 50.0)   # #10 pregatit la punctul cu var (90, 50)!
+
+            set_pos("101", 98.5, 50.0)  # Portarul #101 pe linia portii!
+            set_pos("102", 84.5, 69.0)
+            set_pos("103", 82.5, 58.0)
+            set_pos("104", 82.5, 42.0)
+            set_pos("105", 84.5, 31.0)
+            set_pos("106", 80.0, 55.0)
+            set_pos("107", 80.0, 45.0)
+            set_pos("108", 76.0, 68.0)
+            set_pos("109", 76.0, 32.0)
+            set_pos("110", 62.0, 58.0)
+            set_pos("111", 62.0, 42.0)
+
+            self.ball["x"] = 90.0
+            self.ball["y"] = 50.0
+            self.restart_ball_x = 90.0
+            self.restart_ball_y = 50.0
+            self.restart_ball_placed = True
+            self.restart_ready = True
+            self.possession = None
+            self.last_touch = "103"
+            self.kicking_team = "A"
+
+        # =====================================================================
+        # 8. FREE KICK (ZID): Lovitura libera directa de la ~21m cu ZID de 4 jucatori!
+        # =====================================================================
+        elif scenario_name == SCENARIO_FREE_KICK:
+            self.scenario_post_status = STATUS_FREE_KICK
+            self.foul_attacking_team = "A"
+            self.foul_defending_team = "B"
+            fk_x, fk_y = 79.5, 41.0
+            self.foul_spot_x = fk_x
+            self.foul_spot_y = fk_y
+
+            set_pos("1", 4.0, 50.0)
+            set_pos("2", 52.0, 76.0)
+            set_pos("3", 46.0, 58.0)
+            set_pos("4", 46.0, 42.0)
+            set_pos("5", 55.0, 20.0)
+            set_pos("7", 75.0, 50.5)    # #7 optiune de pasa scurta langa executant
+            set_pos("6", 83.5, 62.0)    # #6 la marginea careului
+            set_pos("8", fk_x - 1.5, fk_y - 0.5)  # #8 executa lovitura libera!
+            set_pos("9", 86.5, 67.0)    # #9 ataca coltul lung
+            set_pos("10", 86.5, 54.0)   # #10 pe linia careului pentru rebound / deviere
+            set_pos("11", 85.0, 26.0)   # #11 deschis in stanga
+
+            # Calculam pozitia exacta a ZIDULUI de 4 jucatori (#106, #107, #108, #109) la 9.15m de minge spre poarta (100, 50)
+            dx_g = 100.0 - fk_x
+            dy_g = 50.0 - fk_y
+            d_g = math.hypot(dx_g, dy_g)
+            ux, uy = dx_g / d_g, dy_g / d_g
+            px, py = -uy, ux
+            wall_cx = fk_x + ux * 9.15
+            wall_cy = fk_y + uy * 9.15 - 0.6  # protejeaza coltul scurt
+            wall_ids = ["106", "107", "108", "109"]
+            for idx, wid in enumerate(wall_ids):
+                off = (idx - (len(wall_ids) - 1) / 2.0) * 1.48
+                set_pos(wid, wall_cx + px * off, wall_cy + py * off)
+
+            set_pos("101", 98.2, 52.2)  # Portarul #101 acopera coltul lung!
+            set_pos("102", 88.5, 68.0)
+            set_pos("103", 88.5, 58.0)
+            set_pos("104", 88.5, 51.0)
+            set_pos("105", 87.5, 30.0)
+            set_pos("110", 62.0, 56.0)
+            set_pos("111", 62.0, 40.0)
+
+            self.ball["x"] = fk_x
+            self.ball["y"] = fk_y
+            self.restart_ball_x = fk_x
+            self.restart_ball_y = fk_y
+            self.restart_ball_placed = True
+            self.restart_ready = True
+            self.possession = None
+            self.last_touch = "106"
+            self.kicking_team = "A"
+
+    def trigger_foul(self, attacker_id, attacker, defender_id, defender):
+        """
+        Arbitrul fluiera FAULT!
+        - Daca faultul este in interiorul careului de 16m advers -> PENALTY (STATUS_PENALTY, 11m).
+        - Daca faultul este in afara careului -> LOVITURA LIBERA DIRECTA (STATUS_FREE_KICK, cu ZID).
+        """
+        foul_x = max(3.0, min(97.0, float(attacker["x"])))
+        foul_y = max(4.0, min(96.0, float(attacker["y"])))
+        att_team = str(attacker.get("team", "A"))
+        def_team = str(defender.get("team", "B"))
+
+        self.foul_spot_x = foul_x
+        self.foul_spot_y = foul_y
+        self.foul_attacking_team = att_team
+        self.foul_defending_team = def_team
+        self.foul_cooldown_frames = 320  # Cooldown (~16s) pentru a mentine fluenta jocului
+        self.offside_pending = False
+        self.possession = None
+        self.intended_receiver = None
+        self.last_touch = str(defender_id)
+        self.restart_ready = False
+        self.restart_ball_placed = False
+        self.restart_start_time = time.time()
+        self.ball["velocity_x"] *= 0.20
+        self.ball["velocity_y"] *= 0.20
+
+        # Curatam stun-ul ca toti jucatorii sa se poata aseza in zid / careu
+        for p in self.players.values():
+            p["stun_frames"] = 0
+            p["stun_speed_mult"] = 1.0
+            p["stun_type"] = ""
+
+        # Verificam daca faultul s-a produs in careul mare al echipei care se apara (coordonate careu: X<=12.5 sau X>=87.5, 31.5<=Y<=68.5)
+        is_penalty = (
+            (att_team == "A" and foul_x >= 87.5 and 31.5 <= foul_y <= 68.5)
+            or (att_team == "B" and foul_x <= 12.5 and 31.5 <= foul_y <= 68.5)
+        )
+
+        if is_penalty:
+            self.game_status = STATUS_PENALTY
+            self.restart_ball_x = 90.0 if att_team == "A" else 10.0
+            self.restart_ball_y = 50.0
+            print(f"PENALTY pentru Echipa {att_team}! Fault comis de #{defender_id} asupra lui #{attacker_id} in careu!")
+        else:
+            self.game_status = STATUS_FREE_KICK
+            self.restart_ball_x = foul_x
+            self.restart_ball_y = foul_y
+            print(f"FAULT! Lovitura libera directa pentru Echipa {att_team} la ({foul_x:.1f}, {foul_y:.1f})!")
 
     def get_second_last_defender_x(self, defending_team):
         # Returneaza coordonata X a penultimului aparator (inclusiv portarul) conform regulii FIFA de ofsaid

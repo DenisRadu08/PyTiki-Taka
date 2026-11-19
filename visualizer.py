@@ -6,9 +6,10 @@ import subprocess
 import sys
 import time
 from config import (
-    STATUS_GOAL, STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_OFFSIDE,
+    STATUS_GOAL, STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_OFFSIDE, STATUS_FREE_KICK, STATUS_PENALTY,
     STATUS_SCENARIO_COUNTDOWN, STATUS_SCENARIO_DONE, STATUS_MATCH_OVER, STATUS_PLAYING, STATUS_START_GAME, STATE_KICK,
-    SCENARIO_1V1_GK, SCENARIO_OFFSIDE_VAR, SCENARIO_CORNER, SCENARIO_TIKI_TAKA, SCENARIO_GOAL_KICK, SCENARIO_THROW_IN
+    SCENARIO_1V1_GK, SCENARIO_OFFSIDE_VAR, SCENARIO_CORNER, SCENARIO_TIKI_TAKA, SCENARIO_GOAL_KICK, SCENARIO_THROW_IN,
+    SCENARIO_PENALTY, SCENARIO_FREE_KICK
 )
 import math
 import random
@@ -113,7 +114,9 @@ class GameVisualizer:
             SCENARIO_CORNER: "CORNER",
             SCENARIO_TIKI_TAKA: "COUNTER-ATTACK",
             SCENARIO_GOAL_KICK: "GOAL KICK",
-            SCENARIO_THROW_IN: "THROW-IN"
+            SCENARIO_THROW_IN: "THROW-IN",
+            SCENARIO_PENALTY: "PENALTY",
+            SCENARIO_FREE_KICK: "FREE KICK"
         }
 
         self.simulation_started = True
@@ -414,8 +417,8 @@ class GameVisualizer:
                 if self.sound_goal:
                     self.sound_goal.play()
 
-            # Fluierul arbitrului la OFSAID sau la finalizarea unei faze tactice active
-            if (current_status == STATUS_OFFSIDE and self.last_status != STATUS_OFFSIDE) or (
+            # Fluierul arbitrului la OFSAID, FAULT (lovitura libera / penalty) sau la finalizarea unei faze tactice active
+            if (current_status in [STATUS_OFFSIDE, STATUS_FREE_KICK, STATUS_PENALTY] and self.last_status != current_status and self.last_status != STATUS_SCENARIO_COUNTDOWN) or (
                 current_status == STATUS_SCENARIO_DONE and self.last_status != STATUS_SCENARIO_DONE and self.active_scenario is not None
             ):
                 if self.sound_whistle:
@@ -483,6 +486,28 @@ class GameVisualizer:
                     pulse_r = int((11 + 3 * math.sin(time.time() * 8.0)) * self.scale)
                     pygame.draw.circle(self.screen, (255, 80, 80), (spot_px, spot_py), pulse_r, max(2, int(2 * self.scale)))
 
+            # 4.55. MARCAJUL LOCULUI FAULTULUI + ARCUL DE 9.15m (STATUS_FREE_KICK / STATUS_PENALTY)
+            elif message.get("game_status") in [STATUS_FREE_KICK, STATUS_PENALTY]:
+                f_x = message.get("foul_spot_x")
+                f_y = message.get("foul_spot_y")
+                if f_x is not None and f_y is not None:
+                    fpx = int(self.stadium_padding_x + (float(f_x) * (self.play_width / 100.0)))
+                    fpy = int(self.stadium_padding_y + (float(f_y) * (self.play_height / 100.0)))
+                    # "X" rosu pulsatoriu pe locul unde s-a produs faultul
+                    cross = int((7 + 2 * math.sin(time.time() * 8.0)) * self.scale)
+                    cw = max(2, int(3 * self.scale))
+                    pygame.draw.line(self.screen, (255, 60, 60), (fpx - cross, fpy - cross), (fpx + cross, fpy + cross), cw)
+                    pygame.draw.line(self.screen, (255, 60, 60), (fpx - cross, fpy + cross), (fpx + cross, fpy - cross), cw)
+
+                if message.get("game_status") == STATUS_FREE_KICK and message.get("restart_ball_placed", False):
+                    # Spray-ul arbitrului: cercul de 9.15m in jurul mingii (distanta regulamentara a zidului)
+                    r_x = int(9.15 * (self.play_width / 100.0))
+                    r_y = int(9.15 * (self.play_height / 100.0))
+                    arc_rect = pygame.Rect(int(ball_x) - r_x, int(ball_y) - r_y, 2 * r_x, 2 * r_y)
+                    spray = pygame.Surface((arc_rect.width + 4, arc_rect.height + 4), pygame.SRCALPHA)
+                    pygame.draw.ellipse(spray, (255, 255, 255, 110), pygame.Rect(2, 2, arc_rect.width, arc_rect.height), max(1, int(2 * self.scale)))
+                    self.screen.blit(spray, (arc_rect.x - 2, arc_rect.y - 2))
+
             # 4.6. PREVIEW TACTIC PE GAZON IN TIMPUL NUMARATORII 3, 2, 1 (STATUS_SCENARIO_COUNTDOWN)
             elif message.get("game_status") == STATUS_SCENARIO_COUNTDOWN:
                 pulse_ball_r = int((14 + 4 * math.sin(time.time() * 7.0)) * self.scale)
@@ -498,6 +523,14 @@ class GameVisualizer:
                         end_y = min(bot_y, curr_y + dash_len)
                         pygame.draw.line(self.screen, (0, 230, 255), (screen_line_x, curr_y), (screen_line_x, end_y), max(1, int(2 * self.scale)))
                         curr_y += dash_len + gap_len
+                elif self.active_scenario == SCENARIO_FREE_KICK:
+                    # Afisam cercul de 9.15m (spray-ul arbitrului) si in timpul numaratorii inverse 3, 2, 1!
+                    r_x = int(9.15 * (self.play_width / 100.0))
+                    r_y = int(9.15 * (self.play_height / 100.0))
+                    arc_rect = pygame.Rect(int(ball_x) - r_x, int(ball_y) - r_y, 2 * r_x, 2 * r_y)
+                    spray = pygame.Surface((arc_rect.width + 4, arc_rect.height + 4), pygame.SRCALPHA)
+                    pygame.draw.ellipse(spray, (255, 255, 255, 110), pygame.Rect(2, 2, arc_rect.width, arc_rect.height), max(1, int(2 * self.scale)))
+                    self.screen.blit(spray, (arc_rect.x - 2, arc_rect.y - 2))
 
             # 5. Parcurgem jucatorii (Desenam intai jucatorii ca mingea sa fie deasupra lor)
             for player_id, player_data in message["players"].items():
@@ -684,8 +717,43 @@ class GameVisualizer:
                 off_rect = text_off.get_rect(center=off_pos)
                 self.screen.blit(text_off, off_rect)
 
+            elif message.get("game_status") in [STATUS_FREE_KICK, STATUS_PENALTY]:
+                att_team = message.get("foul_attacking_team")
+                team_lbl = "RED" if att_team == "A" else ("BLUE" if att_team == "B" else "")
+                if message.get("game_status") == STATUS_PENALTY:
+                    banner = f"PENALTY! (11M) - {team_lbl}"
+                    banner_col = (255, 80, 80)
+                else:
+                    # Numarul de jucatori din zid (dupa distanta pana la poarta, ca la regulile din agent.py)
+                    rbx = float(message.get("restart_ball_x", 50.0))
+                    rby = float(message.get("restart_ball_y", 50.0))
+                    def_goal_x = 100.0 if att_team == "A" else 0.0
+                    d_goal = math.hypot(def_goal_x - rbx, 50.0 - rby)
+                    if d_goal <= 20.5:
+                        wall_n = 5
+                    elif d_goal <= 25.5:
+                        wall_n = 4
+                    elif d_goal <= 31.0:
+                        wall_n = 3
+                    elif d_goal <= 37.0:
+                        wall_n = 2
+                    else:
+                        wall_n = 0
+                    wall_txt = f" | ZID: {wall_n}" if wall_n > 0 else ""
+                    banner = f"FAULT! LOVITURA LIBERA - {team_lbl} ({int(round(d_goal))}m){wall_txt}"
+                    banner_col = (255, 170, 60)
+                text_f = self.font.render(banner, True, banner_col)
+                text_f_sh = self.font.render(banner, True, self.BLACK)
+                f_pos = (self.screen.get_width() // 2, top_banner_y)
+                self.screen.blit(text_f_sh, text_f_sh.get_rect(center=(f_pos[0] + 3, f_pos[1] + 3)))
+                self.screen.blit(text_f, text_f.get_rect(center=f_pos))
+
             elif message.get("game_status") == STATUS_SCENARIO_COUNTDOWN:
                 sc_label = self.SCENARIO_LABELS.get(self.active_scenario, self.active_scenario)
+                if self.active_scenario == SCENARIO_FREE_KICK:
+                    sc_label = "FREE KICK (22m | ZID: 4)"
+                elif self.active_scenario == SCENARIO_PENALTY:
+                    sc_label = "PENALTY (11M)"
                 cd_num = str(message.get("scenario_countdown_left", 3))
 
                 # Titlul fazei sus pe centru
@@ -809,9 +877,11 @@ class GameVisualizer:
                     (SCENARIO_CORNER, "CORNER"),
                     (SCENARIO_TIKI_TAKA, "COUNTER-ATTACK"),
                     (SCENARIO_GOAL_KICK, "GOAL KICK"),
-                    (SCENARIO_THROW_IN, "THROW-IN")
+                    (SCENARIO_THROW_IN, "THROW-IN"),
+                    (SCENARIO_PENALTY, "PENALTY"),
+                    (SCENARIO_FREE_KICK, "FREE KICK")
                 ]
-                sc_btn_w = int(126 * self.scale)
+                sc_btn_w = int(112 * self.scale)
                 sc_btn_h = int(28 * self.scale)
                 sc_gap = int(10 * self.scale)
                 total_bar_w = len(sc_list) * sc_btn_w + (len(sc_list) - 1) * sc_gap

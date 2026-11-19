@@ -355,6 +355,184 @@ class PlayerAgent:
         ty = max(5.0, min(95.0, ty))
         return tx, ty
 
+    def get_direct_free_kick_position(self, ball_x, ball_y, has_restart):
+        """
+        Calculeaza pozitia tactica pentru Lovitura Libera Directa dupa FAULT (STATUS_FREE_KICK):
+        - Echipa care se apara (has_restart=False) formeaza un ZID DINAMIC intre minge si propria poarta:
+          * La marginea careului (dist <= 20.5m): 5 oameni in zid!
+          * Aproape de careu (20.5m < dist <= 25.5m): 4 oameni in zid!
+          * Distanta medie (25.5m < dist <= 31.0m): 3 oameni in zid!
+          * Distanta mare (31.0m < dist <= 37.0m): 2 oameni in zid!
+          * Peste 37.0m: 1 om in fata mingii la 9.15m + bloc defensiv compact!
+        - Echipa care ataca (has_restart=True) aduce jucatori la marginea careului pentru sut/combinatie/rebound.
+        """
+        attack_dir = 1.0 if float(self.start_x) < 50.0 else -1.0
+        own_goal_x = 0.0 if attack_dir > 0 else 100.0
+        opp_goal_x = 100.0 if attack_dir > 0 else 0.0
+        try:
+            player_num = int(self.agent_id) % 100
+        except ValueError:
+            player_num = 10
+
+        if has_restart:
+            # ECHIPA CARE EXECUTA LOVITURA LIBERA DIRECTA
+            dist_to_opp_goal = math.hypot(opp_goal_x - ball_x, 50.0 - ball_y)
+            if dist_to_opp_goal <= 35.0:
+                # Lovitura libera periculoasa in jumatatea adversa (aproape de careu):
+                if player_num == 7:
+                    # Mijlocas la 7m lateral-spate pentru optiune de pasa scurta / schema la lovitura libera
+                    side_dir = 1.0 if ball_y < 50.0 else -1.0
+                    tx = ball_x - attack_dir * 3.5
+                    ty = max(14.0, min(86.0, ball_y + side_dir * 7.5))
+                elif player_num == 6:
+                    # La semicercul de 16m pentru sut din pasa scurta sau respingere
+                    tx = opp_goal_x - attack_dir * 17.5
+                    ty = 57.0 if ball_y < 50.0 else 43.0
+                elif player_num == 9:
+                    # Ataca coltul de sus al careului (rebound / centrare)
+                    tx = opp_goal_x - attack_dir * 13.5
+                    ty = 66.0
+                elif player_num == 10:
+                    # Varful sta pe linia de 13.5m central, gata sa atace rebound-ul din portar/zid
+                    tx = opp_goal_x - attack_dir * 13.2
+                    ty = 52.0 if ball_y < 50.0 else 48.0
+                elif player_num == 11:
+                    # Ataca partea de jos a careului
+                    tx = opp_goal_x - attack_dir * 13.5
+                    ty = 34.0
+                elif player_num in [2, 5]:
+                    # Fundasii laterali asigura latimea si siguranta la 32m de poarta adversa
+                    tx = opp_goal_x - attack_dir * 32.0
+                    ty = 74.0 if player_num == 2 else 26.0
+                else:
+                    # Fundasii centrali (3, 4) raman la mijlocul terenului contra contraatacului
+                    tx = opp_goal_x - attack_dir * 50.0
+                    ty = 57.0 if player_num == 3 else 43.0
+            else:
+                # Lovitura libera de constructie de la distanta mare (> 35m)
+                return self.get_free_kick_position(ball_x, ball_y, True)
+        else:
+            # ECHIPA CARE SE APARA -> FORMAREA ZIDULUI DINAMIC + MARCAJ IN CAREU
+            dx_g = own_goal_x - ball_x
+            dy_g = 50.0 - ball_y
+            dist_to_own_goal = max(1.0, math.hypot(dx_g, dy_g))
+
+            # Numarul de jucatori in zid scade natural pe masura ce distanta fata de poarta creste!
+            if dist_to_own_goal <= 20.5:
+                wall_nums = [6, 7, 8, 9, 11]  # 5 oameni in zid la marginea careului!
+            elif dist_to_own_goal <= 25.5:
+                wall_nums = [6, 7, 8, 9]      # 4 oameni in zid!
+            elif dist_to_own_goal <= 31.0:
+                wall_nums = [6, 7, 8]         # 3 oameni in zid!
+            elif dist_to_own_goal <= 37.0:
+                wall_nums = [6, 7]            # 2 oameni in zid!
+            else:
+                wall_nums = [10]              # 1 om la 9.15m pentru a bloca pasa scurta
+
+            if player_num in wall_nums:
+                ux = dx_g / dist_to_own_goal
+                uy = dy_g / dist_to_own_goal
+                # Vector perpendicular pe linia minge-poarta pentru alinierea umar la umar a zidului
+                px = -uy
+                py = ux
+                wall_dist = min(9.15, max(5.5, dist_to_own_goal - 4.2))
+                # Zidul acopera cu prioritate coltul scurt, lasand coltul lung portarului
+                near_shift = -0.6 if ball_y < 48.0 else (0.6 if ball_y > 52.0 else 0.0)
+                wall_cx = ball_x + ux * wall_dist
+                wall_cy = ball_y + uy * wall_dist + near_shift
+
+                idx = wall_nums.index(player_num)
+                offset = (idx - (len(wall_nums) - 1) / 2.0) * 1.48
+                tx = wall_cx + px * offset
+                ty = wall_cy + py * offset
+            else:
+                # Jucatorii care NU sunt in zid protejeaza interiorul/marginea careului sau stau la contraatac
+                if dist_to_own_goal <= 37.0:
+                    box_line_x = own_goal_x - attack_dir * 11.5  # (11.5m in fata propriei porti)
+                    if player_num == 2:
+                        tx, ty = box_line_x, 67.0
+                    elif player_num == 3:
+                        tx, ty = box_line_x, 56.5
+                    elif player_num == 4:
+                        tx, ty = box_line_x, 43.5
+                    elif player_num == 5:
+                        tx, ty = box_line_x, 33.0
+                    elif player_num == 8:
+                        tx, ty = own_goal_x - attack_dir * 14.5, 48.0
+                    elif player_num == 9:
+                        tx, ty = own_goal_x - attack_dir * 15.5, 62.0
+                    elif player_num == 11:
+                        tx, ty = own_goal_x - attack_dir * 15.5, 38.0
+                    else:
+                        # Varful #10 ramane avansat la ~36m de propria poarta pentru contraatac
+                        tx, ty = own_goal_x - attack_dir * 36.0, 50.0
+                else:
+                    return self.get_free_kick_position(ball_x, ball_y, False)
+
+        tx = max(3.5, min(96.5, tx))
+        ty = max(4.0, min(96.0, ty))
+        return tx, ty
+
+    def get_penalty_position(self, ball_x, ball_y, has_restart):
+        """
+        Calculeaza pozitia regulamentara FIFA la PENALTY (STATUS_PENALTY):
+        Toti jucatorii (in afara executantului si a portarului advers) stau IN AFARA careului de 16m
+        si IN AFARA semicercului de la 16m, pregatiti sa sprinteze in careu daca portarul respinge!
+        """
+        try:
+            player_num = int(self.agent_id) % 100
+        except ValueError:
+            player_num = 6
+
+        # Se executa la poarta din dreapta (ball_x = 90.0) sau la poarta din stanga (ball_x = 10.0)?
+        is_right_goal = (ball_x > 50.0)
+        box_edge_x = 84.5 if is_right_goal else 15.5
+        arc_edge_x = 79.5 if is_right_goal else 20.5
+        mid_hold_x = 52.0 if is_right_goal else 48.0
+
+        if has_restart:
+            # Echipa care executa penalty-ul
+            if player_num in [2, 3, 4, 5]:
+                # Fundasii asigura echilibrul defensiv la mijlocul terenului
+                y_map = {2: 72.0, 3: 56.0, 4: 44.0, 5: 28.0}
+                tx, ty = mid_hold_x, y_map.get(player_num, 50.0)
+            elif player_num == 6:
+                tx, ty = box_edge_x, 65.0
+            elif player_num == 7:
+                tx, ty = arc_edge_x, 52.5
+            elif player_num == 8:
+                tx, ty = arc_edge_x + (2.0 if is_right_goal else -2.0), 39.0
+            elif player_num == 9:
+                tx, ty = box_edge_x, 72.0
+            elif player_num == 11:
+                tx, ty = box_edge_x, 28.0
+            else:
+                tx, ty = arc_edge_x, 47.5
+        else:
+            # Echipa care apara penalty-ul (aliniata la marginea careului pentru a degaja un eventual rebound)
+            if player_num == 2:
+                tx, ty = box_edge_x, 69.0
+            elif player_num == 3:
+                tx, ty = box_edge_x - (2.0 if is_right_goal else -2.0), 58.0
+            elif player_num == 4:
+                tx, ty = box_edge_x - (2.0 if is_right_goal else -2.0), 42.0
+            elif player_num == 5:
+                tx, ty = box_edge_x, 31.0
+            elif player_num == 6:
+                tx, ty = arc_edge_x, 55.5
+            elif player_num == 7:
+                tx, ty = arc_edge_x, 44.5
+            elif player_num == 8:
+                tx, ty = arc_edge_x - (3.5 if is_right_goal else -3.5), 67.0
+            elif player_num == 9:
+                tx, ty = arc_edge_x - (3.5 if is_right_goal else -3.5), 33.0
+            else:
+                # Atacantii (10, 11) asteapta la 38m pentru contraatac
+                tx = 62.0 if is_right_goal else 38.0
+                ty = 58.0 if player_num == 10 else 42.0
+
+        return max(4.0, min(96.0, tx)), max(4.0, min(96.0, ty))
+
     def get_offside_line_x(self, message):
         """
         Calculeaza linia de ofsaid a adversarilor (coordonata X a penultimului aparator advers,
@@ -1088,7 +1266,7 @@ class PlayerAgent:
 
                         
                 # Calculam cel mai apropiat jucator activ (folosind punctul de repunere daca suntem in faza fixa)
-                is_dead_ball_status = message["game_status"] in [STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_OFFSIDE]
+                is_dead_ball_status = message["game_status"] in [STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_OFFSIDE, STATUS_FREE_KICK, STATUS_PENALTY]
                 ref_ball_x = message.get("restart_ball_x", message["ball"]["x"]) if is_dead_ball_status else message["ball"]["x"]
                 ref_ball_y = message.get("restart_ball_y", message["ball"]["y"]) if is_dead_ball_status else message["ball"]["y"]
 
@@ -1418,6 +1596,162 @@ class PlayerAgent:
                                 intention["target_agent_id"] = str(best_target_id)
                             self.dealer_socket.send_json(intention)
                             self.state = STATE_IDLE
+
+                # =====================================================================
+                # FAULT! LOVITURA LIBERA DIRECTA CU ZID DINAMIC (STATUS_FREE_KICK)
+                # =====================================================================
+                elif message["game_status"] == STATUS_FREE_KICK:
+                    att_team = message.get("foul_attacking_team")
+                    if not att_team:
+                        last_touch_id = str(message.get("last_touch"))
+                        last_touch_team = message["players"].get(last_touch_id, {}).get("team", "B")
+                        att_team = "A" if last_touch_team == "B" else "B"
+
+                    my_team_has_restart = (self.team == att_team)
+                    opp_goal_x = 100.0 if float(self.start_x) < 50.0 else 0.0
+                    dist_fk_to_goal = math.hypot(opp_goal_x - ref_ball_x, 50.0 - ref_ball_y)
+
+                    try:
+                        my_num = int(self.agent_id) % 100
+                    except ValueError:
+                        my_num = 10
+
+                    # La loviturile libere din zona de sut (<= 35m), executantul desemnat este #8 (specialistul)
+                    # iar la distanta mare (> 35m) executa cel mai apropiat jucator de camp
+                    is_designated_fk_taker = (my_num == 8) if dist_fk_to_goal <= 35.0 else am_i_closest_to_ball
+                    has_active_fk_taker = any(
+                        p_d.get("team") == self.team and p_d.get("state") == STATE_DO_FREE_KICK and p_d.get("stun_frames", 0) == 0
+                        for p_d in message["players"].values()
+                    )
+
+                    if self.state not in [STATE_DO_FREE_KICK, STATE_WAIT_FREE_KICK] or (
+                        my_team_has_restart and not has_active_fk_taker and is_designated_fk_taker and self.state != STATE_DO_FREE_KICK
+                    ):
+                        # Un singur executant: specialistul #8 (zona de sut) sau cel mai apropiat (constructie)
+                        if my_team_has_restart and is_designated_fk_taker:
+                            self.state = STATE_DO_FREE_KICK
+                        else:
+                            self.state = STATE_WAIT_FREE_KICK
+
+                        intention = {
+                            "agent_id": self.agent_id,
+                            "action": self.state
+                        }
+                        if self.state == STATE_WAIT_FREE_KICK:
+                            intention["target_x"], intention["target_y"] = self.get_direct_free_kick_position(
+                                ref_ball_x, ref_ball_y, my_team_has_restart
+                            )
+                        self.dealer_socket.send_json(intention)
+
+                    # Executia loviturii libere directe: SUT PESTE ZID LA VINCLU sau PASA INTELIGENTA!
+                    if self.state == STATE_DO_FREE_KICK and self.calculate_distance(message["ball"]["x"], message["ball"]["y"]) < 2.5:
+                        if message.get("restart_ready", False) and message.get("restart_ball_placed", True):
+                            attack_dir_fk = 1.0 if float(self.start_x) < 50.0 else -1.0
+                            dist_goal = math.hypot(opp_goal_x - self.x, 50.0 - self.y)
+
+                            # 1. Daca suntem in distanta de sut (<= 29.0m de poarta), prioritizam SUTUL DIRECT PESTE ZID spre coltul liber!
+                            should_shoot_fk = (dist_goal <= 25.0) or (dist_goal <= 29.5 and random.random() < 0.75) or (
+                                message.get("game_mode") == "scenarios" and message.get("active_scenario") == SCENARIO_FREE_KICK
+                            )
+
+                            if should_shoot_fk:
+                                # Tintim coltul lung sau coltul scurt la vinclu cu precizie de specialist
+                                if self.y < 48.0:
+                                    aim_y = random.uniform(53.5, 56.8) if random.random() < 0.68 else random.uniform(43.2, 46.0)
+                                elif self.y > 52.0:
+                                    aim_y = random.uniform(43.2, 46.5) if random.random() < 0.68 else random.uniform(54.0, 56.8)
+                                else:
+                                    aim_y = random.choice([random.uniform(43.2, 46.2), random.uniform(53.8, 56.8)])
+
+                                actual_fk_y = aim_y + random.gauss(0.0, 0.95)
+                                fk_shot_power = min(SHOT_POWER_MAX, max(2.85, 2.65 + dist_goal * 0.025))
+                                intention = self.prepare_kick(opp_goal_x, actual_fk_y, power = fk_shot_power, action_type = STATE_KICK)
+                                self.dealer_socket.send_json(intention)
+                                self.state = STATE_IDLE
+                            else:
+                                # 2. Schema tactica / Pasa catre cel mai bine demarcat coechipier
+                                best_target_x, best_target_y = 50.0, 50.0
+                                best_target_id = None
+                                best_score = -999.0
+
+                                for p_id, p_data in message["players"].items():
+                                    if p_data["team"] == self.team and str(p_id) != str(self.agent_id) and p_data["stun_frames"] == 0:
+                                        if p_data.get("role") == "GK" or str(p_id) in ["1", "101"]:
+                                            continue
+                                        dist = math.hypot(p_data["x"] - self.x, p_data["y"] - self.y)
+                                        if dist < 4.5 or dist > 38.0:
+                                            continue
+                                        min_opp_d = 99.0
+                                        for o_id, o_data in message["players"].items():
+                                            if o_data["team"] != self.team:
+                                                d_o = math.hypot(o_data["x"] - p_data["x"], o_data["y"] - p_data["y"])
+                                                if d_o < min_opp_d:
+                                                    min_opp_d = d_o
+                                        prog = (p_data["x"] - self.x) * attack_dir_fk
+                                        sc = min(min_opp_d, 12.0) * 6.0 + prog * 1.8 - abs(dist - 14.0) * 1.2
+                                        if sc > best_score:
+                                            best_score = sc
+                                            best_target_x = p_data["x"]
+                                            best_target_y = p_data["y"]
+                                            best_target_id = p_id
+
+                                fk_dist = math.hypot(best_target_x - self.x, best_target_y - self.y)
+                                fk_power = min(max(0.85 + fk_dist * 0.052, 1.35), 2.85)
+                                intention = self.prepare_kick(best_target_x, best_target_y, power = fk_power, action_type = STATE_PASS)
+                                if best_target_id is not None:
+                                    intention["target_agent_id"] = str(best_target_id)
+                                self.dealer_socket.send_json(intention)
+                                self.state = STATE_IDLE
+
+                # =====================================================================
+                # PENALTY (LOVITURA DE LA 11 METRI - STATUS_PENALTY)
+                # =====================================================================
+                elif message["game_status"] == STATUS_PENALTY:
+                    att_team = message.get("foul_attacking_team")
+                    if not att_team:
+                        att_team = "A" if ref_ball_x > 50.0 else "B"
+
+                    my_team_has_restart = (self.team == att_team)
+                    try:
+                        my_num = int(self.agent_id) % 100
+                    except ValueError:
+                        my_num = 6
+
+                    # Atacantul #10 (sau #110 la Blue) bate penalty-ul!
+                    is_penalty_taker = (my_team_has_restart and my_num == 10)
+                    has_active_pen_taker = any(
+                        p_d.get("team") == self.team and p_d.get("state") == STATE_DO_PENALTY and p_d.get("stun_frames", 0) == 0
+                        for p_d in message["players"].values()
+                    )
+
+                    if self.state not in [STATE_DO_PENALTY, STATE_WAIT_PENALTY] or (
+                        is_penalty_taker and not has_active_pen_taker and self.state != STATE_DO_PENALTY
+                    ):
+                        if is_penalty_taker:
+                            self.state = STATE_DO_PENALTY
+                        else:
+                            self.state = STATE_WAIT_PENALTY
+
+                        intention = {
+                            "agent_id": self.agent_id,
+                            "action": self.state
+                        }
+                        if self.state == STATE_WAIT_PENALTY:
+                            intention["target_x"], intention["target_y"] = self.get_penalty_position(
+                                ref_ball_x, ref_ball_y, my_team_has_restart
+                            )
+                        self.dealer_socket.send_json(intention)
+
+                    # Executia Penalty-ului de la 11m: sut plasat spre unul dintre colturi!
+                    if self.state == STATE_DO_PENALTY and self.calculate_distance(message["ball"]["x"], message["ball"]["y"]) < 2.5:
+                        if message.get("restart_ready", False) and message.get("restart_ball_placed", True):
+                            opp_goal_x = 100.0 if float(self.start_x) < 50.0 else 0.0
+                            aim_pen_y = random.choice([random.uniform(42.8, 46.0), random.uniform(54.0, 57.2)])
+                            actual_pen_y = aim_pen_y + random.gauss(0.0, 0.70)
+                            pen_power = random.uniform(2.95, 3.25)
+                            intention = self.prepare_kick(opp_goal_x, actual_pen_y, power = pen_power, action_type = STATE_KICK)
+                            self.dealer_socket.send_json(intention)
+                            self.state = STATE_IDLE
                 
                 # ===================================
                 # JOCUL ESTE IN DESFASURARE (PLAYING)
@@ -1551,7 +1885,7 @@ class PlayerAgent:
                         self.dealer_socket.send_json(intention)
 
                     # E IN FAZA FIXA SI A FOST EXECUTATA => TRECE IN IDLE 
-                    elif self.state in [STATE_DO_THROW_IN, STATE_WAIT_THROW_IN, STATE_DO_CORNER, STATE_WAIT_CORNER, STATE_DO_GOAL_KICK, STATE_WAIT_GOAL_KICK, STATE_DO_FREE_KICK, STATE_WAIT_FREE_KICK]:
+                    elif self.state in [STATE_DO_THROW_IN, STATE_WAIT_THROW_IN, STATE_DO_CORNER, STATE_WAIT_CORNER, STATE_DO_GOAL_KICK, STATE_WAIT_GOAL_KICK, STATE_DO_FREE_KICK, STATE_WAIT_FREE_KICK, STATE_DO_PENALTY, STATE_WAIT_PENALTY]:
                         self.state = STATE_IDLE
                         intention = {
                             "agent_id" : self.agent_id,

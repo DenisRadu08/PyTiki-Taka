@@ -234,6 +234,46 @@ class GoalkeeperAgent(PlayerAgent):
                         }
                         self.dealer_socket.send_json(intention)
 
+                # ========================================================
+                # FAULT: LOVITURA LIBERA DIRECTA SAU PENALTY (11M)
+                # ========================================================
+                elif message["game_status"] in [STATUS_FREE_KICK, STATUS_PENALTY]:
+                    is_penalty = (message["game_status"] == STATUS_PENALTY)
+                    own_goal_x = 0.0 if float(self.start_x) < 50.0 else 100.0
+                    att_team = message.get("foul_attacking_team")
+                    i_am_defending = (att_team is not None and att_team != self.team)
+                    ref_bx = message.get("restart_ball_x", message["ball"]["x"])
+                    ref_by = message.get("restart_ball_y", message["ball"]["y"])
+
+                    if i_am_defending and is_penalty:
+                        # FIFA: portarul sta pe linia portii, intre bare, cu fata la executant
+                        gk_tx = 0.6 if own_goal_x == 0.0 else 99.4
+                        gk_ty = 50.0
+                    elif i_am_defending:
+                        # Lovitura libera directa: zidul acopera coltul scurt,
+                        # portarul se deplaseaza spre coltul LUNG, la ~1.4m in fata liniei portii
+                        dist_fk = math.hypot(ref_bx - own_goal_x, ref_by - 50.0)
+                        far_side = 1.0 if ref_by < 50.0 else -1.0
+                        lateral_shift = 2.4 if dist_fk <= 28.0 else 1.2
+                        gk_tx = own_goal_x + (1.4 if own_goal_x == 0.0 else -1.4)
+                        gk_ty = 50.0 + far_side * lateral_shift
+                    else:
+                        # Echipa noastra executa: portarul ramane in propria poarta
+                        gk_tx = own_goal_x + (2.0 if own_goal_x == 0.0 else -2.0)
+                        gk_ty = 50.0
+
+                    target_state = STATE_WAIT_PENALTY if is_penalty else STATE_WAIT_FREE_KICK
+                    if self.state != target_state or abs(gk_ty - self.last_target_y) > 0.3:
+                        self.state = target_state
+                        self.last_target_y = gk_ty
+                        intention = {
+                            "agent_id": self.agent_id,
+                            "action": self.state,
+                            "target_x": gk_tx,
+                            "target_y": gk_ty
+                        }
+                        self.dealer_socket.send_json(intention)
+
                 # ===================================
                 # JOCUL ESTE IN DESFASURARE (PLAYING)
                 # ===================================
@@ -250,7 +290,7 @@ class GoalkeeperAgent(PlayerAgent):
                         pass
 
                     # E IN FAZA FIXA SI A FOST EXECUTATA => TRECE IN IDLE 
-                    elif self.state in [STATE_DO_THROW_IN, STATE_WAIT_THROW_IN, STATE_DO_CORNER, STATE_WAIT_CORNER, STATE_DO_GOAL_KICK, STATE_WAIT_GOAL_KICK, STATE_DO_FREE_KICK, STATE_WAIT_FREE_KICK]:
+                    elif self.state in [STATE_DO_THROW_IN, STATE_WAIT_THROW_IN, STATE_DO_CORNER, STATE_WAIT_CORNER, STATE_DO_GOAL_KICK, STATE_WAIT_GOAL_KICK, STATE_DO_FREE_KICK, STATE_WAIT_FREE_KICK, STATE_DO_PENALTY, STATE_WAIT_PENALTY]:
                         self.state = STATE_IDLE
                         intention = {
                             "agent_id" : self.agent_id,
