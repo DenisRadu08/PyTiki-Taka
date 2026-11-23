@@ -5,6 +5,7 @@ import sys
 import multiprocessing
 import os
 import json
+from ai_brains import get_available_ai_builds, BASE_BUILD_NAME
 
 def resource_path(relative_path):
     # Gaseste folderul secret unde PyInstaller dezarhiveaza fisierele
@@ -23,9 +24,42 @@ def get_command(arg):
         return [sys.executable, "launcher.py", arg]
 
 def run_launcher():
+    # Incarcam setarile salvate anterior (nume echipe, AI build, durata meci)
+    saved_team_a_name = "RED"
+    saved_team_b_name = "BLUE"
+    saved_team_a_ai = BASE_BUILD_NAME
+    saved_team_b_ai = BASE_BUILD_NAME
+    avail_builds = get_available_ai_builds()
+    try:
+        if os.path.exists("settings.json"):
+            with open("settings.json", "r") as rf:
+                loaded_init = json.load(rf)
+                teams_cfg = loaded_init.get("teams", {})
+                saved_team_a_name = str(teams_cfg.get("A", {}).get("name", "RED")).strip() or "RED"
+                saved_team_b_name = str(teams_cfg.get("B", {}).get("name", "BLUE")).strip() or "BLUE"
+                ta_ai = str(teams_cfg.get("A", {}).get("ai_build", BASE_BUILD_NAME))
+                tb_ai = str(teams_cfg.get("B", {}).get("ai_build", BASE_BUILD_NAME))
+                if ta_ai in avail_builds:
+                    saved_team_a_ai = ta_ai
+                if tb_ai in avail_builds:
+                    saved_team_b_ai = tb_ai
+    except Exception:
+        pass
+
     def set_game_mode_and_launch(mode):
         print(f"Starting the game in mode: {mode}...")
-        settings_data = {"match_rules": {"match_duration_real_seconds": 180.0, "game_mode": mode}}
+        name_a = (team_a_entry.get().strip()[:10].upper()) or "RED"
+        name_b = (team_b_entry.get().strip()[:10].upper()) or "BLUE"
+        ai_a = team_a_ai_combo.get() or BASE_BUILD_NAME
+        ai_b = team_b_ai_combo.get() or BASE_BUILD_NAME
+
+        settings_data = {
+            "match_rules": {"match_duration_real_seconds": 180.0, "game_mode": mode},
+            "teams": {
+                "A": {"name": name_a, "ai_build": ai_a},
+                "B": {"name": name_b, "ai_build": ai_b}
+            }
+        }
         try:
             if os.path.exists("settings.json"):
                 with open("settings.json", "r") as f:
@@ -48,6 +82,10 @@ def run_launcher():
         ret_code = p.wait() # Asteapta ca jocul sa se inchida
         if ret_code == 42:
             # Utilizatorul a apasat "MAIN MENU" in timpul jocului -> readucem meniul principal pe ecran!
+            # Reimprospatam lista de AI builds in caz ca s-a antrenat un model nou
+            fresh_builds = get_available_ai_builds()
+            team_a_ai_combo.configure(values=fresh_builds)
+            team_b_ai_combo.configure(values=fresh_builds)
             root.deiconify()
         else:
             root.destroy() # Opreste executia launcher.py cand utilizatorul apasa QUIT / ESC
@@ -101,8 +139,12 @@ def run_launcher():
                 minutes = int(selected_text.split(" ")[0])
                 final_seconds = float(minutes * 60)
             
-            # Construim JSON-ul pastrand game_mode daca exista
+            # Construim JSON-ul pastrand game_mode si configuratia echipelor
             existing_mode = "match"
+            existing_teams = {
+                "A": {"name": (team_a_entry.get().strip()[:10].upper()) or "RED", "ai_build": team_a_ai_combo.get() or BASE_BUILD_NAME},
+                "B": {"name": (team_b_entry.get().strip()[:10].upper()) or "BLUE", "ai_build": team_b_ai_combo.get() or BASE_BUILD_NAME}
+            }
             try:
                 if os.path.exists("settings.json"):
                     with open("settings.json", "r") as rf:
@@ -113,7 +155,8 @@ def run_launcher():
                 "match_rules": {
                     "match_duration_real_seconds": final_seconds,
                     "game_mode": existing_mode
-                }
+                },
+                "teams": existing_teams
             }
 
             # Scriem in settings.json
@@ -157,6 +200,37 @@ def run_launcher():
     # Plasam imaginea pe tot fundalul
     bg_label = ctk.CTkLabel(root, image=bg_image, text="")
     bg_label.place(relx=0.5, rely=0.5, anchor="center")
+
+    # ==========================================================
+    # CARDURI CONFIGURARE ECHIPE (NUME + SELECTOR AI BUILD)
+    # ==========================================================
+    # Card Stanga: ECHIPA A (RED)
+    team_a_card = ctk.CTkFrame(root, width=225, height=130, corner_radius=12, fg_color="#161C28", border_width=2, border_color="#DC143C")
+    team_a_card.pack_propagate(False)
+    team_a_card.place(relx=0.20, rely=0.54, anchor="center")
+
+    ctk.CTkLabel(team_a_card, text="LEFT TEAM (RED)", font=("Arial", 12, "bold"), text_color="#FF5C77").pack(pady=(8, 4))
+    team_a_entry = ctk.CTkEntry(team_a_card, width=185, height=28, placeholder_text="Team Name (RED)", justify="center", font=("Arial", 12, "bold"))
+    team_a_entry.insert(0, saved_team_a_name)
+    team_a_entry.pack(pady=(2, 6))
+
+    team_a_ai_combo = ctk.CTkComboBox(team_a_card, width=185, height=28, values=avail_builds, state="readonly", font=("Arial", 12))
+    team_a_ai_combo.set(saved_team_a_ai)
+    team_a_ai_combo.pack(pady=(2, 6))
+
+    # Card Dreapta: ECHIPA B (BLUE)
+    team_b_card = ctk.CTkFrame(root, width=225, height=130, corner_radius=12, fg_color="#161C28", border_width=2, border_color="#1E90FF")
+    team_b_card.pack_propagate(False)
+    team_b_card.place(relx=0.80, rely=0.54, anchor="center")
+
+    ctk.CTkLabel(team_b_card, text="RIGHT TEAM (BLUE)", font=("Arial", 12, "bold"), text_color="#5BB2FF").pack(pady=(8, 4))
+    team_b_entry = ctk.CTkEntry(team_b_card, width=185, height=28, placeholder_text="Team Name (BLUE)", justify="center", font=("Arial", 12, "bold"))
+    team_b_entry.insert(0, saved_team_b_name)
+    team_b_entry.pack(pady=(2, 6))
+
+    team_b_ai_combo = ctk.CTkComboBox(team_b_card, width=185, height=28, values=avail_builds, state="readonly", font=("Arial", 12))
+    team_b_ai_combo.set(saved_team_b_ai)
+    team_b_ai_combo.pack(pady=(2, 6))
     
     # Butonul modern de START MATCH (90 MIN)
     start_button = ctk.CTkButton(

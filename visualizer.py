@@ -7,12 +7,13 @@ import sys
 import time
 from config import (
     STATUS_GOAL, STATUS_OUT, STATUS_CORNER, STATUS_GOAL_KICK, STATUS_OFFSIDE, STATUS_FREE_KICK, STATUS_PENALTY,
-    STATUS_SCENARIO_COUNTDOWN, STATUS_SCENARIO_DONE, STATUS_MATCH_OVER, STATUS_PLAYING, STATUS_START_GAME, STATE_KICK,
+    STATUS_SCENARIO_COUNTDOWN, STATUS_SCENARIO_DONE, STATUS_HALF_TIME, STATUS_MATCH_OVER, STATUS_PLAYING, STATUS_START_GAME, STATE_KICK,
     SCENARIO_1V1_GK, SCENARIO_OFFSIDE_VAR, SCENARIO_CORNER, SCENARIO_TIKI_TAKA, SCENARIO_GOAL_KICK, SCENARIO_THROW_IN,
     SCENARIO_PENALTY, SCENARIO_FREE_KICK
 )
 import math
 import random
+from ai_brains import get_short_ai_tag
 
 class GameVisualizer:
     def __init__(self):
@@ -146,8 +147,16 @@ class GameVisualizer:
         
         self.font = pygame. font.SysFont("Arial", int(48 * self.scale), bold = True)
         self.small_font = pygame.font.SysFont("Arial", max(9, int(11 * self.scale)), bold=True)
-        
+        self.stats_font = pygame.font.SysFont("Arial", max(11, int(13 * self.scale)), bold=True)
+        self.stats_title_font = pygame.font.SysFont("Arial", max(13, int(16 * self.scale)), bold=True)
         self.huge_font = pygame.font.SysFont("Arial", int(80 * self.scale), bold=True)
+
+        self.btn_resume_half = None
+        self.btn_ft_restart = None
+        self.btn_ft_menu = None
+        self.stats_pill_rect = None
+        self.stats_dropdown_rect = None
+        self.stats_hover_open = False
         
     
     def stop_engine(self):
@@ -156,6 +165,95 @@ class GameVisualizer:
             print("Curatam toate procesele din fundal...")
             subprocess.call(['taskkill', '/F', '/T', '/PID', str(self.engine_process.pid)])
             self.engine_process = None
+
+    def draw_stats_panel(self, stats, center_x, top_y, panel_w, full=True, alpha_panel=230, team_a_name="RED", team_b_name="BLUE"):
+        """
+        Deseneaza panoul de statistici stil transmisiune TV (Echipa A vs Echipa B):
+        - full=False (Hover in joc): Setul 1 (xG, Possession, Shots, Shots on Target, Passes, Pass Accuracy, Corners).
+        - full=True (Half-Time & Full-Time): Setul 1 + Setul 2 (Tackles Won, Saves, Fouls, Offsides).
+        Returneaza pygame.Rect-ul intregului panou desenat.
+        """
+        sa = stats.get("A", {}) if stats else {}
+        sb = stats.get("B", {}) if stats else {}
+
+        rows_basic = [
+            ("EXPECTED GOALS (xG)", f"{sa.get('xg', 0.0):.2f}", f"{sb.get('xg', 0.0):.2f}", float(sa.get('xg', 0.0)), float(sb.get('xg', 0.0))),
+            ("POSSESSION", f"{sa.get('possession', 50)}%", f"{sb.get('possession', 50)}%", float(sa.get('possession', 50)), float(sb.get('possession', 50))),
+            ("TOTAL SHOTS", str(sa.get('shots', 0)), str(sb.get('shots', 0)), float(sa.get('shots', 0)), float(sb.get('shots', 0))),
+            ("SHOTS ON TARGET", str(sa.get('shots_on_target', 0)), str(sb.get('shots_on_target', 0)), float(sa.get('shots_on_target', 0)), float(sb.get('shots_on_target', 0))),
+            ("PASSES", str(sa.get('passes', 0)), str(sb.get('passes', 0)), float(sa.get('passes', 0)), float(sb.get('passes', 0))),
+            ("PASS ACCURACY", f"{sa.get('pass_accuracy', 0)}%", f"{sb.get('pass_accuracy', 0)}%", float(sa.get('pass_accuracy', 0)), float(sb.get('pass_accuracy', 0))),
+            ("CORNERS", str(sa.get('corners', 0)), str(sb.get('corners', 0)), float(sa.get('corners', 0)), float(sb.get('corners', 0))),
+        ]
+        rows_extra = [
+            ("TACKLES WON", str(sa.get('tackles_won', 0)), str(sb.get('tackles_won', 0)), float(sa.get('tackles_won', 0)), float(sb.get('tackles_won', 0))),
+            ("GOALKEEPER SAVES", str(sa.get('saves', 0)), str(sb.get('saves', 0)), float(sa.get('saves', 0)), float(sb.get('saves', 0))),
+            ("FOULS", str(sa.get('fouls', 0)), str(sb.get('fouls', 0)), float(sa.get('fouls', 0)), float(sb.get('fouls', 0))),
+            ("OFFSIDES", str(sa.get('offsides', 0)), str(sb.get('offsides', 0)), float(sa.get('offsides', 0)), float(sb.get('offsides', 0))),
+        ]
+
+        rows = rows_basic + (rows_extra if full else [])
+        header_h = int(34 * self.scale)
+        row_h = int((30 if full else 27) * self.scale)
+        pad_x = int(20 * self.scale)
+        divider_extra = int(8 * self.scale) if full else 0
+        panel_h = header_h + len(rows) * row_h + divider_extra + int(14 * self.scale)
+
+        panel_x = int(center_x - panel_w // 2)
+        panel_rect = pygame.Rect(panel_x, int(top_y), int(panel_w), int(panel_h))
+
+        surf = pygame.Surface((panel_rect.width, panel_rect.height), pygame.SRCALPHA)
+        pygame.draw.rect(surf, (14, 20, 32, alpha_panel), surf.get_rect(), border_radius=12)
+        pygame.draw.rect(surf, (255, 255, 255, min(255, alpha_panel)), surf.get_rect(), max(1, int(2 * self.scale)), border_radius=12)
+
+        # Antetul panoului: TEAM A | MATCH STATS | TEAM B
+        pygame.draw.rect(surf, (25, 34, 52, alpha_panel), pygame.Rect(2, 2, panel_rect.width - 4, header_h - 2), border_top_left_radius=10, border_top_right_radius=10)
+        red_hdr = self.stats_title_font.render(str(team_a_name), True, (255, 85, 105))
+        mid_hdr = self.stats_title_font.render("MATCH STATS", True, (255, 215, 0))
+        blu_hdr = self.stats_title_font.render(str(team_b_name), True, (80, 175, 255))
+        surf.blit(red_hdr, red_hdr.get_rect(midleft=(pad_x, header_h // 2)))
+        surf.blit(mid_hdr, mid_hdr.get_rect(center=(panel_rect.width // 2, header_h // 2)))
+        surf.blit(blu_hdr, blu_hdr.get_rect(midright=(panel_rect.width - pad_x, header_h // 2)))
+
+        curr_y = header_h + int(6 * self.scale)
+        bar_w_total = panel_rect.width - 2 * pad_x
+        bar_h = max(3, int(4 * self.scale))
+
+        for idx, (label, val_a_str, val_b_str, num_a, num_b) in enumerate(rows):
+            if full and idx == len(rows_basic):
+                # Separator subtil intre statisticile de baza si cele avansate
+                pygame.draw.line(surf, (255, 255, 255, 55), (pad_x, curr_y), (panel_rect.width - pad_x, curr_y), 1)
+                curr_y += divider_extra
+
+            txt_y = curr_y + int(9 * self.scale)
+            col_a = (255, 255, 255) if num_a >= num_b else (180, 190, 205)
+            col_b = (255, 255, 255) if num_b >= num_a else (180, 190, 205)
+
+            s_a = self.stats_font.render(val_a_str, True, col_a)
+            s_lbl = self.small_font.render(label, True, (200, 212, 228))
+            s_b = self.stats_font.render(val_b_str, True, col_b)
+
+            surf.blit(s_a, s_a.get_rect(midleft=(pad_x, txt_y)))
+            surf.blit(s_lbl, s_lbl.get_rect(center=(panel_rect.width // 2, txt_y)))
+            surf.blit(s_b, s_b.get_rect(midright=(panel_rect.width - pad_x, txt_y)))
+
+            # Bara comparativa proportionala RED vs BLUE sub fiecare rand
+            bar_y = curr_y + int(20 * self.scale)
+            pygame.draw.rect(surf, (45, 55, 72, 200), pygame.Rect(pad_x, bar_y, bar_w_total, bar_h), border_radius=2)
+            total_val = num_a + num_b
+            if total_val > 0.0:
+                ratio_a = num_a / total_val
+                w_a = int(bar_w_total * ratio_a)
+                w_b = bar_w_total - w_a
+                if w_a > 0:
+                    pygame.draw.rect(surf, (*self.RED, 235), pygame.Rect(pad_x, bar_y, w_a, bar_h), border_radius=2)
+                if w_b > 0:
+                    pygame.draw.rect(surf, (*self.BLUE, 235), pygame.Rect(pad_x + w_a, bar_y, w_b, bar_h), border_radius=2)
+
+            curr_y += row_h
+
+        self.screen.blit(surf, panel_rect.topleft)
+        return panel_rect
 
     def draw_pitch(self):
         # fundalul complet
@@ -336,6 +434,27 @@ class GameVisualizer:
                         if clicked_scenario:
                             continue
 
+                    # Click pe butonul "RESUME MATCH" de pe ecranul de PAUZA (HALF TIME)
+                    if self.btn_resume_half is not None and self.btn_resume_half.collidepoint(mouse_pos):
+                        print("Reluam meciul -> Repriza a 2-a (schimbarea terenurilor)...")
+                        self.cmd_socket.send_json({"command": "RESUME_SECOND_HALF"})
+                        self.btn_resume_half = None
+                        continue
+
+                    # Click pe butoanele din ecranul FULL TIME (PLAY AGAIN / MAIN MENU)
+                    if self.btn_ft_restart is not None and self.btn_ft_restart.collidepoint(mouse_pos):
+                        print("Restartam meciul din ecranul FULL TIME...")
+                        self.stop_engine()
+                        time.sleep(0.5)
+                        self.engine_process = subprocess.Popen(get_command("--engine"))
+                        self.match_over_whistle_played = False
+                        continue
+                    if self.btn_ft_menu is not None and self.btn_ft_menu.collidepoint(mouse_pos):
+                        print("Revenim in Meniul Principal (Main Menu)...")
+                        self.stop_engine()
+                        pygame.quit()
+                        sys.exit(42)
+
                     # Cazul B: In timpul simularii (Butoanele mici)
                     if hasattr(self, 'btn_restart') and self.btn_restart.collidepoint(mouse_pos):
                         if self.game_mode == "scenarios":
@@ -417,8 +536,8 @@ class GameVisualizer:
                 if self.sound_goal:
                     self.sound_goal.play()
 
-            # Fluierul arbitrului la OFSAID, FAULT (lovitura libera / penalty) sau la finalizarea unei faze tactice active
-            if (current_status in [STATUS_OFFSIDE, STATUS_FREE_KICK, STATUS_PENALTY] and self.last_status != current_status and self.last_status != STATUS_SCENARIO_COUNTDOWN) or (
+            # Fluierul arbitrului la OFSAID, FAULT (lovitura libera / penalty), PAUZA (HALF TIME) sau la finalizarea unei faze tactice active
+            if (current_status in [STATUS_OFFSIDE, STATUS_FREE_KICK, STATUS_PENALTY, STATUS_HALF_TIME] and self.last_status != current_status and self.last_status != STATUS_SCENARIO_COUNTDOWN) or (
                 current_status == STATUS_SCENARIO_DONE and self.last_status != STATUS_SCENARIO_DONE and self.active_scenario is not None
             ):
                 if self.sound_whistle:
@@ -719,7 +838,9 @@ class GameVisualizer:
 
             elif message.get("game_status") in [STATUS_FREE_KICK, STATUS_PENALTY]:
                 att_team = message.get("foul_attacking_team")
-                team_lbl = "RED" if att_team == "A" else ("BLUE" if att_team == "B" else "")
+                t_a_lbl = str(message.get("team_A_name", "RED"))
+                t_b_lbl = str(message.get("team_B_name", "BLUE"))
+                team_lbl = t_a_lbl if att_team == "A" else (t_b_lbl if att_team == "B" else "")
                 if message.get("game_status") == STATUS_PENALTY:
                     banner = f"PENALTY! (11M) - {team_lbl}"
                     banner_col = (255, 80, 80)
@@ -727,7 +848,8 @@ class GameVisualizer:
                     # Numarul de jucatori din zid (dupa distanta pana la poarta, ca la regulile din agent.py)
                     rbx = float(message.get("restart_ball_x", 50.0))
                     rby = float(message.get("restart_ball_y", 50.0))
-                    def_goal_x = 100.0 if att_team == "A" else 0.0
+                    left_team_v = "A" if message.get("half", 1) == 1 else "B"
+                    def_goal_x = 100.0 if att_team == left_team_v else 0.0
                     d_goal = math.hypot(def_goal_x - rbx, 50.0 - rby)
                     if d_goal <= 20.5:
                         wall_n = 5
@@ -797,26 +919,156 @@ class GameVisualizer:
 
             # ======================================================
 
+            # Extragem numele si tag-urile AI ale celor doua echipe (din Launcher -> Engine)
+            team_a_name = str(message.get("team_A_name", "RED"))
+            team_b_name = str(message.get("team_B_name", "BLUE"))
+            team_a_tag = get_short_ai_tag(message.get("team_A_ai", "Base Build"))
+            team_b_tag = get_short_ai_tag(message.get("team_B_ai", "Base Build"))
+
+            # Resetam butoanele contextuale de pauza/final pe fiecare cadru (se activeaza doar in starea lor)
+            self.btn_resume_half = None
+            self.btn_ft_restart = None
+            self.btn_ft_menu = None
+            mouse_pos = pygame.mouse.get_pos()
+
             # =======================================================
-            # 10. ECRANUL DE FINAL DE MECI (MATCH OVER)
+            # 10. PAUZA LA MINUTUL 45:00 (HALF TIME) SI FINAL DE MECI (MATCH OVER)
             # =======================================================
+            if message.get("game_status") == STATUS_HALF_TIME:
+                # Folie semi-transparenta ca sa vedem jucatorii cum merg spre vestiare + panoul clar de statistici
+                overlay = pygame.Surface((self.screen.get_width(), self.screen.get_height()), pygame.SRCALPHA)
+                overlay.fill((0, 0, 0, 148))
+                self.screen.blit(overlay, (0, 0))
+
+                cx = self.screen.get_width() // 2
+                score_a = message.get("score_A", 0)
+                score_b = message.get("score_B", 0)
+
+                text_ht = self.font.render("HALF TIME", True, (255, 215, 0))
+                text_ht_sh = self.font.render("HALF TIME", True, self.BLACK)
+                ht_y = int(68 * self.scale)
+                self.screen.blit(text_ht_sh, text_ht_sh.get_rect(center=(cx + 3, ht_y + 3)))
+                self.screen.blit(text_ht, text_ht.get_rect(center=(cx, ht_y)))
+
+                text_score = self.font.render(f"{team_a_name}  {score_a} - {score_b}  {team_b_name}", True, self.WHITE)
+                score_y = int(116 * self.scale)
+                self.screen.blit(text_score, text_score.get_rect(center=(cx, score_y)))
+
+                panel_w = int(430 * self.scale)
+                panel_rect = self.draw_stats_panel(
+                    message.get("match_stats", {}), cx, int(152 * self.scale), panel_w,
+                    full=True, alpha_panel=235, team_a_name=f"{team_a_name} [{team_a_tag}]", team_b_name=f"{team_b_name} [{team_b_tag}]"
+                )
+
+                # Butonul "RESUME MATCH" pentru a incepe Repriza a 2-a (cu schimbarea terenurilor)
+                res_w = int(220 * self.scale)
+                res_h = int(42 * self.scale)
+                self.btn_resume_half = pygame.Rect(cx - res_w // 2, panel_rect.bottom + int(18 * self.scale), res_w, res_h)
+                is_hov_res = self.btn_resume_half.collidepoint(mouse_pos)
+                res_col = (40, 185, 95) if is_hov_res else (28, 150, 75)
+                pygame.draw.rect(self.screen, res_col, self.btn_resume_half, border_radius=10)
+                pygame.draw.rect(self.screen, (255, 215, 0) if is_hov_res else self.WHITE, self.btn_resume_half, 2, border_radius=10)
+                res_txt = self.stats_title_font.render("RESUME MATCH", True, self.WHITE)
+                self.screen.blit(res_txt, res_txt.get_rect(center=self.btn_resume_half.center))
+
             elif message.get("game_status") == STATUS_MATCH_OVER:
                 # O folie semi-transparenta neagra peste tot ecranul
                 overlay = pygame.Surface((self.screen.get_width(), self.screen.get_height()), pygame.SRCALPHA)
-                overlay.fill((0, 0, 0, 180)) # 180 = Destul de intunecat pentru contrast
+                overlay.fill((0, 0, 0, 188))
                 self.screen.blit(overlay, (0, 0))
 
-                # Text FULL TIME
-                text_over = self.huge_font.render("FULL TIME", True, self.WHITE)
-                over_rect = text_over.get_rect(center=(self.screen.get_width() // 2, self.screen.get_height() // 2 - int(50 * self.scale)))
-                self.screen.blit(text_over, over_rect)
-
-                # Scorul Final (folosind un auriu frumos)
+                cx = self.screen.get_width() // 2
                 score_a = message.get("score_A", 0)
                 score_b = message.get("score_B", 0)
-                text_score = self.font.render(f"RED {score_a} - {score_b} BLUE", True, (255, 215, 0))
-                score_rect = text_score.get_rect(center=(self.screen.get_width() // 2, self.screen.get_height() // 2 + int(30 * self.scale)))
-                self.screen.blit(text_score, score_rect)
+
+                # Text FULL TIME
+                text_over = self.font.render("FULL TIME", True, (255, 215, 0))
+                over_sh = self.font.render("FULL TIME", True, self.BLACK)
+                ft_y = int(68 * self.scale)
+                self.screen.blit(over_sh, over_sh.get_rect(center=(cx + 3, ft_y + 3)))
+                self.screen.blit(text_over, text_over.get_rect(center=(cx, ft_y)))
+
+                # Scorul Final
+                text_score = self.font.render(f"{team_a_name}  {score_a} - {score_b}  {team_b_name}", True, self.WHITE)
+                score_y = int(116 * self.scale)
+                self.screen.blit(text_score, text_score.get_rect(center=(cx, score_y)))
+
+                # Panoul complet de statistici pe mijloc
+                panel_w = int(430 * self.scale)
+                panel_rect = self.draw_stats_panel(
+                    message.get("match_stats", {}), cx, int(152 * self.scale), panel_w,
+                    full=True, alpha_panel=238, team_a_name=f"{team_a_name} [{team_a_tag}]", team_b_name=f"{team_b_name} [{team_b_tag}]"
+                )
+
+                # Doua butoane elegante dedesubt: PLAY AGAIN si MAIN MENU
+                ft_btn_w = int(170 * self.scale)
+                ft_btn_h = int(40 * self.scale)
+                ft_gap = int(18 * self.scale)
+                ft_btn_y = panel_rect.bottom + int(18 * self.scale)
+                self.btn_ft_restart = pygame.Rect(cx - ft_btn_w - ft_gap // 2, ft_btn_y, ft_btn_w, ft_btn_h)
+                self.btn_ft_menu = pygame.Rect(cx + ft_gap // 2, ft_btn_y, ft_btn_w, ft_btn_h)
+
+                for b_rect, b_col, b_hov_col, b_lbl in [
+                    (self.btn_ft_restart, (28, 125, 215), (45, 150, 245), "PLAY AGAIN"),
+                    (self.btn_ft_menu, (195, 130, 0), (230, 160, 10), "MAIN MENU")
+                ]:
+                    hov = b_rect.collidepoint(mouse_pos)
+                    pygame.draw.rect(self.screen, b_hov_col if hov else b_col, b_rect, border_radius=10)
+                    pygame.draw.rect(self.screen, self.WHITE, b_rect, 2, border_radius=10)
+                    lbl_s = self.stats_title_font.render(b_lbl, True, self.WHITE)
+                    self.screen.blit(lbl_s, lbl_s.get_rect(center=b_rect.center))
+
+            # =======================================================
+            # BARA DISCRETA DE POSESIE + DROPDOWN STATISTICI PE HOVER (IN TIMPUL MECIULUI)
+            # =======================================================
+            if self.game_mode != "scenarios" and message.get("game_status") not in [STATUS_HALF_TIME, STATUS_MATCH_OVER]:
+                m_stats = message.get("match_stats", {})
+                poss_a = m_stats.get("A", {}).get("possession", 50)
+                poss_b = m_stats.get("B", {}).get("possession", 50)
+
+                pill_w = int(230 * self.scale)
+                pill_h = int(28 * self.scale)
+                pill_x = (self.screen.get_width() - pill_w) // 2
+                pill_y = int(14 * self.scale)
+                self.stats_pill_rect = pygame.Rect(pill_x, pill_y, pill_w, pill_h)
+
+                is_hover_pill = self.stats_pill_rect.collidepoint(mouse_pos)
+                is_hover_dd = (self.stats_hover_open and self.stats_dropdown_rect is not None and self.stats_dropdown_rect.collidepoint(mouse_pos))
+                self.stats_hover_open = is_hover_pill or is_hover_dd
+
+                pill_alpha = 235 if self.stats_hover_open else 105
+                pill_surf = pygame.Surface((pill_w, pill_h), pygame.SRCALPHA)
+                pygame.draw.rect(pill_surf, (16, 22, 34, pill_alpha), pill_surf.get_rect(), border_radius=8)
+                pygame.draw.rect(pill_surf, (255, 215, 0, pill_alpha) if self.stats_hover_open else (255, 255, 255, pill_alpha), pill_surf.get_rect(), 1, border_radius=8)
+
+                p_txt = self.small_font.render(f"POSSESSION   {poss_a}%  |  {poss_b}%", True, (255, 255, 255))
+                p_txt.set_alpha(255 if self.stats_hover_open else 175)
+                pill_surf.blit(p_txt, p_txt.get_rect(center=(pill_w // 2, pill_h // 2 - int(2 * self.scale))))
+
+                # Mini bara rosie/albastra la baza pilulei de posesie
+                mb_w = pill_w - int(16 * self.scale)
+                mb_h = max(2, int(3 * self.scale))
+                mb_x = int(8 * self.scale)
+                mb_y = pill_h - mb_h - int(3 * self.scale)
+                w_ra = int(mb_w * (poss_a / 100.0))
+                if w_ra > 0:
+                    pygame.draw.rect(pill_surf, (*self.RED, pill_alpha), pygame.Rect(mb_x, mb_y, w_ra, mb_h), border_radius=1)
+                if mb_w - w_ra > 0:
+                    pygame.draw.rect(pill_surf, (*self.BLUE, pill_alpha), pygame.Rect(mb_x + w_ra, mb_y, mb_w - w_ra, mb_h), border_radius=1)
+
+                self.screen.blit(pill_surf, self.stats_pill_rect.topleft)
+
+                if self.stats_hover_open:
+                    dd_w = int(340 * self.scale)
+                    self.stats_dropdown_rect = self.draw_stats_panel(
+                        m_stats, self.screen.get_width() // 2, self.stats_pill_rect.bottom + int(6 * self.scale),
+                        dd_w, full=False, alpha_panel=232, team_a_name=team_a_name, team_b_name=team_b_name
+                    )
+                else:
+                    self.stats_dropdown_rect = None
+            else:
+                self.stats_hover_open = False
+                self.stats_dropdown_rect = None
 
             # =======================================================
             # DESENAREA BUTOANELOR IN TIMPUL MECIULUI (Ghost HUD)
@@ -927,11 +1179,11 @@ class GameVisualizer:
                 secs = int((v_time - mins) * 60)
                 time_str = f"{mins:02d}:{secs:02d}"
 
-            # 3. Definim latimile pentru fiecare segment din bara
-            box_h = int(35 * self.scale)
-            team_w = int(70 * self.scale)
-            score_w = int(60 * self.scale)
-            time_w = int(70 * self.scale)
+            # 3. Definim latimile pentru fiecare segment din bara (ajustate dinamic ca sa incapa nume pana la 10 caractere)
+            box_h = int(38 * self.scale)
+            team_w = int(84 * self.scale)
+            score_w = int(58 * self.scale)
+            time_w = int(68 * self.scale)
             total_w = team_w + score_w + team_w + time_w
 
             # 4. Plasament: Stanga-Sus (cu o mica margine ca la TV)
@@ -943,11 +1195,13 @@ class GameVisualizer:
             shadow.fill((0, 0, 0, 120))
             self.screen.blit(shadow, (start_x + int(4 * self.scale), start_y + int(4 * self.scale)))
 
-            # 6. Segmentul 1: RED (Fundal Rosu, Text Alb)
+            # 6. Segmentul 1: ECHIPA A / RED (Nume + Tag AI discret dedesubt)
             rect_red = pygame.Rect(start_x, start_y, team_w, box_h)
             pygame.draw.rect(self.screen, self.RED, rect_red)
-            text_red = self.small_font.render("RED", True, self.WHITE)
-            self.screen.blit(text_red, text_red.get_rect(center=rect_red.center))
+            text_red = self.small_font.render(team_a_name, True, self.WHITE)
+            self.screen.blit(text_red, text_red.get_rect(center=(rect_red.centerx, rect_red.centery - int(5 * self.scale))))
+            tag_a_surf = self.small_font.render(f"[{team_a_tag}]", True, (255, 220, 170))
+            self.screen.blit(tag_a_surf, tag_a_surf.get_rect(center=(rect_red.centerx, rect_red.centery + int(9 * self.scale))))
 
             # 7. Segmentul 2: SCOR (Fundal Alb, Text Negru)
             rect_score = pygame.Rect(start_x + team_w, start_y, score_w, box_h)
@@ -955,11 +1209,13 @@ class GameVisualizer:
             text_sc = self.small_font.render(f"{score_a} - {score_b}", True, self.BLACK)
             self.screen.blit(text_sc, text_sc.get_rect(center=rect_score.center))
 
-            # 8. Segmentul 3: BLUE (Fundal Albastru, Text Alb)
+            # 8. Segmentul 3: ECHIPA B / BLUE (Nume + Tag AI discret dedesubt)
             rect_blue = pygame.Rect(start_x + team_w + score_w, start_y, team_w, box_h)
             pygame.draw.rect(self.screen, self.BLUE, rect_blue)
-            text_blue = self.small_font.render("BLUE", True, self.WHITE)
-            self.screen.blit(text_blue, text_blue.get_rect(center=rect_blue.center))
+            text_blue = self.small_font.render(team_b_name, True, self.WHITE)
+            self.screen.blit(text_blue, text_blue.get_rect(center=(rect_blue.centerx, rect_blue.centery - int(5 * self.scale))))
+            tag_b_surf = self.small_font.render(f"[{team_b_tag}]", True, (210, 240, 255))
+            self.screen.blit(tag_b_surf, tag_b_surf.get_rect(center=(rect_blue.centerx, rect_blue.centery + int(9 * self.scale))))
             
             # 9. Segmentul 4: TIMP (Fundal Gri inchis, Text Auriu)
             rect_time = pygame.Rect(start_x + team_w + score_w + team_w, start_y, time_w, box_h)

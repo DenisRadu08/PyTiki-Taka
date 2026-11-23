@@ -7,8 +7,8 @@ import time
 import random
 
 class GoalkeeperAgent(PlayerAgent):
-    def __init__(self, agent_id, team):
-        super().__init__(agent_id, team)
+    def __init__(self, agent_id, team, headless=False):
+        super().__init__(agent_id, team, headless=headless)
         self.last_target_y = 0.0
         self.catch_time = 0.0
 
@@ -88,6 +88,342 @@ class GoalkeeperAgent(PlayerAgent):
         return best_id, best_data, best_dist
 
 
+    def step(self, message):
+        """
+        Executa exact un pas decizional al portarului pe baza starii primite de la MatchEngine.
+        Returneaza lista intentiilor emise (identica in modul live ZeroMQ si in modul headless 1:1).
+        """
+        self._pending_intentions = []
+        # atribuim noile coordonate ale agentului
+        # verificam daca agentul exista in mesaj (pentru prima iteratie, motorul nu stie de agenti)
+        if str(self.agent_id) in message["players"]:
+            self.x = message["players"][str(self.agent_id)]["x"]
+            self.y = message["players"][str(self.agent_id)]["y"]
+            self.start_x = message["players"][str(self.agent_id)]["start_x"]
+            self.start_y = message["players"][str(self.agent_id)]["start_y"]
+
+            # Acceptam deciziile de stare ale Arbitrului (ex: STUN / Pedeapsa)
+            self.state = message["players"][str(self.agent_id)]["state"]
+            self.stun_frames = message["players"][str(self.agent_id)]["stun_frames"] # NOU
+
+        # ========================================================
+        # INCEPE MECIUL (START_GAME) SAU S-A INSCRIS UN GOL (GOAL)
+        # ========================================================
+        if message["game_status"] in [STATUS_START_GAME, STATUS_GOAL]:
+            intention = self.player_in_position(target_x = self.start_x, target_y = self.start_y, position = "POS_STARTGAME")
+            if intention is not None:
+                self._send_intention(intention)
+
+        # ========================================================
+        # PAUZA (HALF TIME) SAU FINALUL MECIULUI (MATCH OVER)
+        # ========================================================
+        elif message["game_status"] in [STATUS_HALF_TIME, STATUS_MATCH_OVER]:
+            self.state = STATE_IDLE
+            intention = {
+                "agent_id": self.agent_id,
+                "action": STATE_IDLE
+            }
+            self._send_intention(intention)
+
+        # ========================================================
+        # PREGATIREA SAU FINALUL FAZEI TACTICE (COUNTDOWN / DONE)
+        # ========================================================
+        elif message["game_status"] in [STATUS_SCENARIO_COUNTDOWN, STATUS_SCENARIO_DONE]:
+            self.state = STATE_IDLE
+
+        # ===================================
+        # MINGEA A IESIT IN OUT (OUT)
+        # ===================================
+        elif message["game_status"] == STATUS_OUT:
+
+            # 1. Atribuirea rolurilor (se executa o singura data)
+            # daca agentul NU este inca intr-o stare de aut, il punem sa aleaga
+            if self.state not in [STATE_DO_THROW_IN, STATE_WAIT_THROW_IN]: 
+
+                self.state = STATE_WAIT_THROW_IN
+                intention = {
+                    "agent_id" : self.agent_id,
+                    "action" : self.state,
+                    # portarul ramane unde este (suprascrie tinta veche de la DEFEND_GOAL)
+                    "target_x" : self.x,
+                    "target_y" : self.y
+                }
+                self._send_intention(intention)
+            
+            # 2. Executia (se verifica fiecare cadru cat timp e aut)
+            # E IN DO_THROW_IN SI AJUNGE LA MINGE
+            if self.state == STATE_DO_THROW_IN and self.calculate_distance(message["ball"]["x"],message["ball"]["y"]) < 1.0:
+                intention = self.prepare_kick(50.0, 50.0, power = 5.0)
+                self._send_intention(intention)
+                self.state = STATE_IDLE # am aruncat mingea!
+        
+        # ===================================
+        # CORNER (CORNER KICK)
+        # ===================================
+        elif message["game_status"] == STATUS_CORNER:
+            if self.state != STATE_WAIT_CORNER:
+                self.state = STATE_WAIT_CORNER
+                # Portarul ramane in poarta pe linia portii pe centru (tinand cont de schimbarea terenurilor la pauza!)
+                intention = {
+                    "agent_id": self.agent_id,
+                    "action": self.state,
+                    "target_x": 2.0 if float(self.start_x) < 50.0 else 98.0,
+                    "target_y": 50.0
+                }
+                self._send_intention(intention)
+
+        # ===================================
+        # AUT DE POARTA (GOAL KICK)
+        # ===================================
+        elif message["game_status"] == STATUS_GOAL_KICK:
+            ref_x = message.get("restart_ball_x", message["ball"]["x"])
+            left_team = "A" if message.get("half", 1) == 1 else "B"
+            right_team = "B" if message.get("half", 1) == 1 else "A"
+            team_awarded = left_team if ref_x < 50.0 else right_team
+            
+            if self.team == team_awarded:
+                # Acest portar executa autul de poarta!
+                if self.state != STATE_DO_GOAL_KICK:
+                    self.state = STATE_DO_GOAL_KICK
+                    intention = {
+                        "agent_id": self.agent_id,
+                        "action": self.state
+                    }
+                    self._send_intention(intention)
+
+                # Cand ajunge la minge si arbitrul a fluierat permisiunea (restart_ready + restart_ball_placed)
+                if self.state == STATE_DO_GOAL_KICK and self.calculate_distance(message["ball"]["x"], message["ball"]["y"]) < 2.5:
+                    if message.get("restart_ready", False) and message.get("restart_ball_placed", True):
+                        chosen_id, chosen_data, chosen_dist = self.select_best_teammate_pass(message)
+                        if chosen_id is not None and chosen_data is not None:
+                            pass_power = min(max(0.80 + chosen_dist * 0.052, 1.30), 3.25)
+                            intention = self.prepare_kick(chosen_data["x"], chosen_data["y"], power = pass_power, action_type = STATE_PASS)
+                            intention["target_agent_id"] = str(chosen_id)
+                            self._send_intention(intention)
+                            self.state = STATE_IDLE
+                        else:
+                            # Fallback de siguranta catre centrul mijlocului
+                            target_x_kick = 45.0 if float(self.start_x) < 50.0 else 55.0
+                            intention = self.prepare_kick(target_x_kick, 50.0, power = 2.4, action_type = STATE_PASS)
+                            self._send_intention(intention)
+                            self.state = STATE_IDLE
+            else:
+                # Portarul advers ramane in propria poarta
+                if self.state != STATE_WAIT_GOAL_KICK:
+                    self.state = STATE_WAIT_GOAL_KICK
+                    intention = {
+                        "agent_id": self.agent_id,
+                        "action": self.state,
+                        "target_x": self.x,
+                        "target_y": self.y
+                    }
+                    self._send_intention(intention)
+
+        # ===================================
+        # OFSAID! LOVITURA LIBERA INDIRECTA
+        # ===================================
+        elif message["game_status"] == STATUS_OFFSIDE:
+            if self.state != STATE_WAIT_FREE_KICK:
+                self.state = STATE_WAIT_FREE_KICK
+                intention = {
+                    "agent_id": self.agent_id,
+                    "action": self.state,
+                    "target_x": 2.0 if float(self.start_x) < 50.0 else 98.0,
+                    "target_y": 50.0
+                }
+                self._send_intention(intention)
+
+        # ========================================================
+        # FAULT: LOVITURA LIBERA DIRECTA SAU PENALTY (11M)
+        # ========================================================
+        elif message["game_status"] in [STATUS_FREE_KICK, STATUS_PENALTY]:
+            is_penalty = (message["game_status"] == STATUS_PENALTY)
+            own_goal_x = 0.0 if float(self.start_x) < 50.0 else 100.0
+            att_team = message.get("foul_attacking_team")
+            i_am_defending = (att_team is not None and att_team != self.team)
+            ref_bx = message.get("restart_ball_x", message["ball"]["x"])
+            ref_by = message.get("restart_ball_y", message["ball"]["y"])
+
+            if i_am_defending and is_penalty:
+                # FIFA: portarul sta pe linia portii, intre bare, cu fata la executant
+                gk_tx = 0.6 if own_goal_x == 0.0 else 99.4
+                gk_ty = 50.0
+            elif i_am_defending:
+                # Lovitura libera directa: zidul acopera coltul scurt,
+                # portarul se deplaseaza spre coltul LUNG, la ~1.4m in fata liniei portii
+                dist_fk = math.hypot(ref_bx - own_goal_x, ref_by - 50.0)
+                far_side = 1.0 if ref_by < 50.0 else -1.0
+                lateral_shift = 2.4 if dist_fk <= 28.0 else 1.2
+                gk_tx = own_goal_x + (1.4 if own_goal_x == 0.0 else -1.4)
+                gk_ty = 50.0 + far_side * lateral_shift
+            else:
+                # Echipa noastra executa: portarul ramane in propria poarta
+                gk_tx = own_goal_x + (2.0 if own_goal_x == 0.0 else -2.0)
+                gk_ty = 50.0
+
+            target_state = STATE_WAIT_PENALTY if is_penalty else STATE_WAIT_FREE_KICK
+            if self.state != target_state or abs(gk_ty - self.last_target_y) > 0.3:
+                self.state = target_state
+                self.last_target_y = gk_ty
+                intention = {
+                    "agent_id": self.agent_id,
+                    "action": self.state,
+                    "target_x": gk_tx,
+                    "target_y": gk_ty
+                }
+                self._send_intention(intention)
+
+        # ===================================
+        # JOCUL ESTE IN DESFASURARE (PLAYING)
+        # ===================================
+        else:
+
+            #==============================
+            #--------MEALY MACHINE---------
+            #==============================
+
+            distance_agent_to_ball = self.calculate_distance(message['ball']['x'],message['ball']['y'])
+            
+            # GUARD CLAUSE pentru stun
+            if self.stun_frames > 0:
+                pass
+
+            # E IN FAZA FIXA SI A FOST EXECUTATA => TRECE IN IDLE 
+            elif self.state in [STATE_DO_THROW_IN, STATE_WAIT_THROW_IN, STATE_DO_CORNER, STATE_WAIT_CORNER, STATE_DO_GOAL_KICK, STATE_WAIT_GOAL_KICK, STATE_DO_FREE_KICK, STATE_WAIT_FREE_KICK, STATE_DO_PENALTY, STATE_WAIT_PENALTY]:
+                self.state = STATE_IDLE
+                intention = {
+                    "agent_id" : self.agent_id,
+                    "action" : self.state
+                }
+                self._send_intention(intention)
+
+            # TRANZITIA DUPA RESET / GK_CLEAR_BALL / PASS
+            elif self.state in [STATE_RESET, STATE_GK_CLEAR_BALL, STATE_PASS]:
+                self.state = STATE_IDLE
+                intention = {
+                    "agent_id" : self.agent_id,
+                    "action" : self.state
+                }
+                self._send_intention(intention)
+
+            # Portarul asteapta 2.5s cu mingea in brate, apoi distribuie precis la un fundas sau mijlocas liber
+            elif self.state == STATE_GK_HOLD_BALL:
+
+                if self._now(message) - self.catch_time > 2.5:
+                    chosen_id, chosen_data, chosen_dist = self.select_best_teammate_pass(message)
+                    if chosen_id is not None and chosen_data is not None:
+                        self.state = STATE_PASS
+                        pass_power = min(max(0.80 + chosen_dist * 0.052, 1.30), 3.25)
+                        intention = self.prepare_kick(chosen_data["x"], chosen_data["y"], power = pass_power, action_type = STATE_PASS)
+                        intention["target_agent_id"] = str(chosen_id)
+                        self._send_intention(intention)
+                    else:
+                        self.state = STATE_PASS
+                        target_x_kick = 45.0 if float(self.start_x) < 50.0 else 55.0
+                        intention = self.prepare_kick(target_x_kick, 50.0, power = 2.4, action_type = STATE_PASS)
+                        self._send_intention(intention)
+                else:
+                    # Mentinem starea de retinere pe durata celor 2.5 secunde
+                    intention = {
+                        "agent_id" : self.agent_id,
+                        "action" : self.state
+                    }
+                    self._send_intention(intention)
+
+            # Portarul retine mingea (serverul a acordat posesia portarului)
+            elif str(message["possession"]) == str(self.agent_id):
+                
+                # daca abia a prins mingea (nu e deja in asteptare)
+                if self.state != STATE_GK_HOLD_BALL:
+                    self.state = STATE_GK_HOLD_BALL
+                    self.catch_time = self._now(message) # pornim cronometrul
+                
+                intention = {
+                    "agent_id" : self.agent_id,
+                    "action" : self.state
+                }
+                self._send_intention(intention)
+                
+
+            # COMPORTAMENTUL DE BAZA: APARAREA / REACTIA LA SUT
+            elif self.state in [STATE_IDLE, STATE_GK_DEFEND_GOAL]:
+                
+                # identificam centrul portii noastre si linia de fund
+                if float(self.start_x) < 50.0:
+                    goal_center_x, goal_center_y = 0.0, 50.0
+                else:
+                    goal_center_x, goal_center_y = 100.0, 50.0
+
+                # extragem datele dinamice ale mingii
+                ball_x = message["ball"]["x"]
+                ball_y = message["ball"]["y"]
+                velocity_x = message["ball"]["velocity_x"]
+                velocity_y = message["ball"]["velocity_y"]
+
+                # Senzorul de sut
+                # verificam daca mingea vine cu viteza spre poarta
+                is_shot_coming = False
+                # vine spre poarta din stanga
+                if goal_center_x == 0.0 and velocity_x < -1.2:
+                    is_shot_coming = True
+
+                # vine spre poarta din dreapta
+                elif goal_center_x == 100.0 and velocity_x > 1.2:
+                    is_shot_coming = True
+
+                # calculul traiectoriei (daca e sut)
+                if is_shot_coming and abs(velocity_x) > 0.05:
+                    # calculam in cate cadre va ajunge mingea pe linia portii
+                    distance_x = abs(ball_x - goal_center_x)
+                    time_to_reach = distance_x / abs(velocity_x)
+
+                    # proiectam pozitia Y ideala unde va ateriza mingea
+                    predicted_y = ball_y + (velocity_y * time_to_reach)
+
+                    # introducerea erorii umane de reactie (mai mare la suturile din apropiere / 1v1)
+                    shot_speed = math.hypot(velocity_x, velocity_y)
+                    error_coefficient = 1.05 if distance_x < 16.5 else 0.65
+                    error_margin = shot_speed * error_coefficient
+                    predicted_y += random.uniform(-error_margin, error_margin)
+
+                    # incadram plonjonul in limitele portii
+                    target_y = max(39.0, min(61.0, predicted_y))
+                    
+                    # portarul plonjeaza pe linia de 2.6 metri in fata portii
+                    target_x = goal_center_x + (2.6 if goal_center_x == 0.0 else -2.6)
+                
+                else:
+                    # vectorul de la poarta catre minge
+                    dx = message["ball"]["x"] - goal_center_x
+                    dy = message["ball"]["y"] - goal_center_y
+
+                    distance_goal_to_ball = math.hypot(dx, dy)
+
+                    # portarul sta pe un arc realist de 3.2 metri in fata portii (nu la 6m unde blocheaza tot unghiul)
+                    gk_arc_radius = 3.2
+                    if distance_goal_to_ball > gk_arc_radius:
+                        target_x = goal_center_x + (dx / distance_goal_to_ball) * gk_arc_radius
+                        target_y = max(43.0, min(57.0, goal_center_y + (dy / distance_goal_to_ball) * gk_arc_radius))
+                    else:
+                        # mingea e foarte aproape in careul mic
+                        target_x = message["ball"]["x"]
+                        target_y = message["ball"]["y"]
+                
+                # trimitem pe retea DOAR daca starea s-a schimbat,
+                # SAU daca mingea s-a miscat mai mult de 0.5 unitati
+                if self.state != STATE_GK_DEFEND_GOAL or abs(target_y - self.last_target_y) > 0.5:
+                    self.state = STATE_GK_DEFEND_GOAL
+                    self.last_target_y = target_y
+                    intention = {
+                        "agent_id" : self.agent_id,
+                        "action" : self.state,
+                        "target_x" : target_x,
+                        "target_y" : target_y
+                    }
+                    self._send_intention(intention)
+
+        return self._pending_intentions
+
     def run(self):
         # Inregistrare agenti
         intention = {
@@ -103,326 +439,7 @@ class GoalkeeperAgent(PlayerAgent):
             # daca motorul a trimis ceva
             if self.sub_socket in events:
                 message = self.sub_socket.recv_json()
-                # atribuim noile coordonate ale agentului
-                # verificam daca agentul exista in mesaj (pentru prima iteratie, motorul nu stie de agenti)
-                if str(self.agent_id) in message["players"]:
-                    self.x = message["players"][str(self.agent_id)]["x"]
-                    self.y = message["players"][str(self.agent_id)]["y"]
-                    self.start_x = message["players"][str(self.agent_id)]["start_x"]
-                    self.start_y = message["players"][str(self.agent_id)]["start_y"]
-                
-                    # Acceptam deciziile de stare ale Arbitrului (ex: STUN / Pedeapsa)
-                    self.state = message["players"][str(self.agent_id)]["state"]
-                    self.stun_frames = message["players"][str(self.agent_id)]["stun_frames"] # NOU
-
-                # ---------------DEBUG CONSOLA-----------------
-                # (MOMENTAN) print(f"Agentul {self.agent_id} (X: {self.x:.2f}, Y: {self.y:.2f}) vede mingea la Coordonatele {message['ball']['x']}, {message['ball']['y']}")
-                # ---------------DEBUG CONSOLA-----------------
-
-
-                # ========================================================
-                # INCEPE MECIUL (START_GAME) SAU S-A INSCRIS UN GOL (GOAL)
-                # ========================================================
-                if message["game_status"] in [STATUS_START_GAME, STATUS_GOAL]:
-                    intention = self.player_in_position(target_x = self.start_x, target_y = self.start_y, position = "POS_STARTGAME")
-                    if intention is not None:
-                        self.dealer_socket.send_json(intention)
-
-                # ========================================================
-                # PREGATIREA SAU FINALUL FAZEI TACTICE (COUNTDOWN / DONE)
-                # ========================================================
-                elif message["game_status"] in [STATUS_SCENARIO_COUNTDOWN, STATUS_SCENARIO_DONE]:
-                    self.state = STATE_IDLE
-                
-                # ===================================
-                # MINGEA A IESIT IN OUT (OUT)
-                # ===================================
-                elif message["game_status"] == STATUS_OUT:
-
-                    # 1. Atribuirea rolurilor (se executa o singura data)
-                    # daca agentul NU este inca intr-o stare de aut, il punem sa aleaga
-                    if self.state not in [STATE_DO_THROW_IN, STATE_WAIT_THROW_IN]: 
-
-                        self.state = STATE_WAIT_THROW_IN
-                        intention = {
-                            "agent_id" : self.agent_id,
-                            "action" : self.state,
-                            # portarul ramane unde este (suprascrie tinta veche de la DEFEND_GOAL)
-                            "target_x" : self.x,
-                            "target_y" : self.y
-                        }
-                        self.dealer_socket.send_json(intention)
-                    
-                    # 2. Executia (se verifica fiecare cadru cat timp e aut)
-                    # E IN DO_THROW_IN SI AJUNGE LA MINGE
-                    if self.state == STATE_DO_THROW_IN and self.calculate_distance(message["ball"]["x"],message["ball"]["y"]) < 1.0:
-                        intention = self.prepare_kick(50.0, 50.0, power = 5.0)
-                        self.dealer_socket.send_json(intention)
-                        self.state = STATE_IDLE # am aruncat mingea!
-                
-                # ===================================
-                # CORNER (CORNER KICK)
-                # ===================================
-                elif message["game_status"] == STATUS_CORNER:
-                    if self.state != STATE_WAIT_CORNER:
-                        self.state = STATE_WAIT_CORNER
-                        # Portarul ramane in poarta pe linia portii pe centru
-                        intention = {
-                            "agent_id": self.agent_id,
-                            "action": self.state,
-                            "target_x": 2.0 if self.team == "A" else 98.0,
-                            "target_y": 50.0
-                        }
-                        self.dealer_socket.send_json(intention)
-
-                # ===================================
-                # AUT DE POARTA (GOAL KICK)
-                # ===================================
-                elif message["game_status"] == STATUS_GOAL_KICK:
-                    ref_x = message.get("restart_ball_x", message["ball"]["x"])
-                    team_awarded = "A" if ref_x < 50.0 else "B"
-                    
-                    if self.team == team_awarded:
-                        # Acest portar executa autul de poarta!
-                        if self.state != STATE_DO_GOAL_KICK:
-                            self.state = STATE_DO_GOAL_KICK
-                            intention = {
-                                "agent_id": self.agent_id,
-                                "action": self.state
-                            }
-                            self.dealer_socket.send_json(intention)
-
-                        # Cand ajunge la minge si arbitrul a fluierat permisiunea (restart_ready + restart_ball_placed)
-                        if self.state == STATE_DO_GOAL_KICK and self.calculate_distance(message["ball"]["x"], message["ball"]["y"]) < 2.5:
-                            if message.get("restart_ready", False) and message.get("restart_ball_placed", True):
-                                chosen_id, chosen_data, chosen_dist = self.select_best_teammate_pass(message)
-                                if chosen_id is not None and chosen_data is not None:
-                                    pass_power = min(max(0.80 + chosen_dist * 0.052, 1.30), 3.25)
-                                    intention = self.prepare_kick(chosen_data["x"], chosen_data["y"], power = pass_power, action_type = STATE_PASS)
-                                    intention["target_agent_id"] = str(chosen_id)
-                                    self.dealer_socket.send_json(intention)
-                                    self.state = STATE_IDLE
-                                else:
-                                    # Fallback de siguranta catre centrul mijlocului
-                                    target_x_kick = 45.0 if float(self.start_x) < 50.0 else 55.0
-                                    intention = self.prepare_kick(target_x_kick, 50.0, power = 2.4, action_type = STATE_PASS)
-                                    self.dealer_socket.send_json(intention)
-                                    self.state = STATE_IDLE
-                    else:
-                        # Portarul advers ramane in propria poarta
-                        if self.state != STATE_WAIT_GOAL_KICK:
-                            self.state = STATE_WAIT_GOAL_KICK
-                            intention = {
-                                "agent_id": self.agent_id,
-                                "action": self.state,
-                                "target_x": self.x,
-                                "target_y": self.y
-                            }
-                            self.dealer_socket.send_json(intention)
-
-                # ===================================
-                # OFSAID! LOVITURA LIBERA INDIRECTA
-                # ===================================
-                elif message["game_status"] == STATUS_OFFSIDE:
-                    if self.state != STATE_WAIT_FREE_KICK:
-                        self.state = STATE_WAIT_FREE_KICK
-                        intention = {
-                            "agent_id": self.agent_id,
-                            "action": self.state,
-                            "target_x": 2.0 if self.team == "A" else 98.0,
-                            "target_y": 50.0
-                        }
-                        self.dealer_socket.send_json(intention)
-
-                # ========================================================
-                # FAULT: LOVITURA LIBERA DIRECTA SAU PENALTY (11M)
-                # ========================================================
-                elif message["game_status"] in [STATUS_FREE_KICK, STATUS_PENALTY]:
-                    is_penalty = (message["game_status"] == STATUS_PENALTY)
-                    own_goal_x = 0.0 if float(self.start_x) < 50.0 else 100.0
-                    att_team = message.get("foul_attacking_team")
-                    i_am_defending = (att_team is not None and att_team != self.team)
-                    ref_bx = message.get("restart_ball_x", message["ball"]["x"])
-                    ref_by = message.get("restart_ball_y", message["ball"]["y"])
-
-                    if i_am_defending and is_penalty:
-                        # FIFA: portarul sta pe linia portii, intre bare, cu fata la executant
-                        gk_tx = 0.6 if own_goal_x == 0.0 else 99.4
-                        gk_ty = 50.0
-                    elif i_am_defending:
-                        # Lovitura libera directa: zidul acopera coltul scurt,
-                        # portarul se deplaseaza spre coltul LUNG, la ~1.4m in fata liniei portii
-                        dist_fk = math.hypot(ref_bx - own_goal_x, ref_by - 50.0)
-                        far_side = 1.0 if ref_by < 50.0 else -1.0
-                        lateral_shift = 2.4 if dist_fk <= 28.0 else 1.2
-                        gk_tx = own_goal_x + (1.4 if own_goal_x == 0.0 else -1.4)
-                        gk_ty = 50.0 + far_side * lateral_shift
-                    else:
-                        # Echipa noastra executa: portarul ramane in propria poarta
-                        gk_tx = own_goal_x + (2.0 if own_goal_x == 0.0 else -2.0)
-                        gk_ty = 50.0
-
-                    target_state = STATE_WAIT_PENALTY if is_penalty else STATE_WAIT_FREE_KICK
-                    if self.state != target_state or abs(gk_ty - self.last_target_y) > 0.3:
-                        self.state = target_state
-                        self.last_target_y = gk_ty
-                        intention = {
-                            "agent_id": self.agent_id,
-                            "action": self.state,
-                            "target_x": gk_tx,
-                            "target_y": gk_ty
-                        }
-                        self.dealer_socket.send_json(intention)
-
-                # ===================================
-                # JOCUL ESTE IN DESFASURARE (PLAYING)
-                # ===================================
-                else:
-
-                    #==============================
-                    #--------MEALY MACHINE---------
-                    #==============================
-        
-                    distance_agent_to_ball = self.calculate_distance(message['ball']['x'],message['ball']['y'])
-                    
-                    # GUARD CLAUSE pentru stun
-                    if self.stun_frames > 0:
-                        pass
-
-                    # E IN FAZA FIXA SI A FOST EXECUTATA => TRECE IN IDLE 
-                    elif self.state in [STATE_DO_THROW_IN, STATE_WAIT_THROW_IN, STATE_DO_CORNER, STATE_WAIT_CORNER, STATE_DO_GOAL_KICK, STATE_WAIT_GOAL_KICK, STATE_DO_FREE_KICK, STATE_WAIT_FREE_KICK, STATE_DO_PENALTY, STATE_WAIT_PENALTY]:
-                        self.state = STATE_IDLE
-                        intention = {
-                            "agent_id" : self.agent_id,
-                            "action" : self.state
-                        }
-                        self.dealer_socket.send_json(intention)
-
-                    # TRANZITIA DUPA RESET / GK_CLEAR_BALL / PASS
-                    elif self.state in [STATE_RESET, STATE_GK_CLEAR_BALL, STATE_PASS]:
-                        self.state = STATE_IDLE
-                        intention = {
-                            "agent_id" : self.agent_id,
-                            "action" : self.state
-                        }
-                        self.dealer_socket.send_json(intention)
-
-                    # Portarul asteapta 2.5s cu mingea in brate, apoi distribuie precis la un fundas sau mijlocas liber
-                    elif self.state == STATE_GK_HOLD_BALL:
-
-                        if time.time() - self.catch_time > 2.5:
-                            chosen_id, chosen_data, chosen_dist = self.select_best_teammate_pass(message)
-                            if chosen_id is not None and chosen_data is not None:
-                                self.state = STATE_PASS
-                                pass_power = min(max(0.80 + chosen_dist * 0.052, 1.30), 3.25)
-                                intention = self.prepare_kick(chosen_data["x"], chosen_data["y"], power = pass_power, action_type = STATE_PASS)
-                                intention["target_agent_id"] = str(chosen_id)
-                                self.dealer_socket.send_json(intention)
-                            else:
-                                self.state = STATE_PASS
-                                target_x_kick = 45.0 if float(self.start_x) < 50.0 else 55.0
-                                intention = self.prepare_kick(target_x_kick, 50.0, power = 2.4, action_type = STATE_PASS)
-                                self.dealer_socket.send_json(intention)
-                        else:
-                            # Mentinem starea de retinere pe durata celor 2.5 secunde
-                            intention = {
-                                "agent_id" : self.agent_id,
-                                "action" : self.state
-                            }
-                            self.dealer_socket.send_json(intention)
-
-                    # Portarul retine mingea (serverul a acordat posesia portarului)
-                    elif str(message["possession"]) == str(self.agent_id):
-                        
-                        # daca abia a prins mingea (nu e deja in asteptare)
-                        if self.state != STATE_GK_HOLD_BALL:
-                            self.state = STATE_GK_HOLD_BALL
-                            self.catch_time = time.time() # pornim cronometrul
-                        
-                        intention = {
-                            "agent_id" : self.agent_id,
-                            "action" : self.state
-                        }
-                        self.dealer_socket.send_json(intention)
-                        
-
-                    # COMPORTAMENTUL DE BAZA: APARAREA / REACTIA LA SUT
-                    elif self.state in [STATE_IDLE, STATE_GK_DEFEND_GOAL]:
-                        
-                        # identificam centrul portii noastre si linia de fund
-                        if float(self.start_x) < 50.0:
-                            goal_center_x, goal_center_y = 0.0, 50.0
-                        else:
-                            goal_center_x, goal_center_y = 100.0, 50.0
-
-                        # extragem datele dinamice ale mingii
-                        ball_x = message["ball"]["x"]
-                        ball_y = message["ball"]["y"]
-                        velocity_x = message["ball"]["velocity_x"]
-                        velocity_y = message["ball"]["velocity_y"]
-
-                        # Senzorul de sut
-                        # verificam daca mingea vine cu viteza spre poarta
-                        is_shot_coming = False
-                        # vine spre poarta din stanga
-                        if goal_center_x == 0.0 and velocity_x < -1.2:
-                            is_shot_coming = True
-
-                        # vine spre poarta din dreapta
-                        elif goal_center_x == 100.0 and velocity_x > 1.2:
-                            is_shot_coming = True
-
-                        # calculul traiectoriei (daca e sut)
-                        if is_shot_coming and abs(velocity_x) > 0.05:
-                            # calculam in cate cadre va ajunge mingea pe linia portii
-                            distance_x = abs(ball_x - goal_center_x)
-                            time_to_reach = distance_x / abs(velocity_x)
-
-                            # proiectam pozitia Y ideala unde va ateriza mingea
-                            predicted_y = ball_y + (velocity_y * time_to_reach)
-
-                            # introducerea erorii umane de reactie (mai mare la suturile din apropiere / 1v1)
-                            shot_speed = math.hypot(velocity_x, velocity_y)
-                            error_coefficient = 1.05 if distance_x < 16.5 else 0.65
-                            error_margin = shot_speed * error_coefficient
-                            predicted_y += random.uniform(-error_margin, error_margin)
-
-                            # incadram plonjonul in limitele portii
-                            target_y = max(39.0, min(61.0, predicted_y))
-                            
-                            # portarul plonjeaza pe linia de 2.6 metri in fata portii
-                            target_x = goal_center_x + (2.6 if goal_center_x == 0.0 else -2.6)
-                        
-                        else:
-                            # vectorul de la poarta catre minge
-                            dx = message["ball"]["x"] - goal_center_x
-                            dy = message["ball"]["y"] - goal_center_y
-
-                            distance_goal_to_ball = math.hypot(dx, dy)
-
-                            # portarul sta pe un arc realist de 3.2 metri in fata portii (nu la 6m unde blocheaza tot unghiul)
-                            gk_arc_radius = 3.2
-                            if distance_goal_to_ball > gk_arc_radius:
-                                target_x = goal_center_x + (dx / distance_goal_to_ball) * gk_arc_radius
-                                target_y = max(43.0, min(57.0, goal_center_y + (dy / distance_goal_to_ball) * gk_arc_radius))
-                            else:
-                                # mingea e foarte aproape in careul mic
-                                target_x = message["ball"]["x"]
-                                target_y = message["ball"]["y"]
-                        
-                        # trimitem pe retea DOAR daca starea s-a schimbat,
-                        # SAU daca mingea s-a miscat mai mult de 0.5 unitati
-                        if self.state != STATE_GK_DEFEND_GOAL or abs(target_y - self.last_target_y) > 0.5:
-                            self.state = STATE_GK_DEFEND_GOAL
-                            self.last_target_y = target_y
-                            intention = {
-                                "agent_id" : self.agent_id,
-                                "action" : self.state,
-                                "target_x" : target_x,
-                                "target_y" : target_y
-                            }
-                            self.dealer_socket.send_json(intention)
-                              
+                self.step(message)
 
             # printam state-ul agentului (DEBUGGING)
             self.print_state(self.state)

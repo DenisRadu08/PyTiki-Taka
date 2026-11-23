@@ -38,6 +38,7 @@ STATUS_PENALTY = "PENALTY"
 STATUS_SCENARIO_COUNTDOWN = "SCENARIO_COUNTDOWN"
 STATUS_SCENARIO_DONE = "SCENARIO_DONE"
 STATUS_START_GAME = "START_GAME"
+STATUS_HALF_TIME = "HALF_TIME"
 STATUS_MATCH_OVER = "MATCH_OVER"
 
 # TACTICAL SCENARIOS (MODUL DE TESTARE & FAZE)
@@ -109,6 +110,7 @@ OUT_OF_PLAY_ROLL_SECONDS = 1.6       # cate secunde vedem mingea cum iese din te
 OFFSIDE_HOLD_SECONDS = 2.0           # cate secunde ramane afisata linia VAR de ofsaid inainte de asezarea mingii pentru lovitura libera indirecta
 FOUL_HOLD_SECONDS = 1.5              # cate secunde se afiseaza marcajul faultului inainte de asezarea mingii pentru lovitura libera / penalty
 GOAL_CELEBRATION_SECONDS = 3.5       # cate secunde ramane mingea in plasa portii dupa gol inainte de centrare
+HALF_TIME_SECONDS = 5.0              # cate secunde dureaza pauza de la minutul 45:00 (intrarea in vestiar si schimbarea terenurilor)
 RESTART_PREPARE_MIN_SECONDS = 3.6
 RESTART_PREPARE_MAX_SECONDS = 5.5
 RESTART_PREPARE_SECONDS = 3.0  # mentinut pentru compatibilitate

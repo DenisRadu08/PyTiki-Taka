@@ -1,0 +1,52 @@
+{
+    "build_name": "Genetic AI (GA)",
+    "saved_at": "2026-11-21 14:52:24",
+    "stage_info": {
+        "winner_source": "Stage1_Champ",
+        "stage1_gens": 180,
+        "stage3_gens": 140,
+        "h2h_win_rate": 34.4,
+        "h2h_fitness": -0.719
+    },
+    "total_matches_simulated": 154130,
+    "metrics": {
+        "idx": 0,
+        "matches": 50,
+        "fitness": 26.17359,
+        "points": 143,
+        "wins": 47,
+        "draws": 2,
+        "losses": 1,
+        "win_rate": 94.0,
+        "avg_gf": 4.12,
+        "avg_ga": 0.22,
+        "avg_xgf": 3.86,
+        "avg_xga": 0.17,
+        "avg_poss": 69.9,
+        "avg_acc": 97.9
+    },
+    "genome": {
+        "base_dribble_score": 45.0,
+        "frontal_freedom_mult": 10.5,
+        "open_lane_mult": 7.4,
+        "carry_momentum_early": 49.2,
+        "box_drive_bonus": 31.5,
+        "base_pass_score": 144.8,
+        "optimal_pass_dist": 9.5,
+        "forward_pass_mid": 28.8,
+        "forward_pass_final": 68.9,
+        "through_ball_bonus": 16.9,
+        "better_spot_bonus": 19.4,
+        "one_two_bonus": 10.1,
+        "anti_pingpong_penalty": 46.5,
+        "kick_base_close": 223.9,
+        "kick_base_box": 182.4,
+        "kick_base_edge": 191.0,
+        "shoot_range_max": 20.6,
+        "secondary_press_def": 20.6,
+        "secondary_press_att": 13.1,
+        "def_line_base_x": 21.3,
+        "def_cover_dist": 3.5,
+        "def_mark_weight": 0.66
+    }
+}
